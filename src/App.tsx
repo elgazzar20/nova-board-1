@@ -17,6 +17,9 @@ import {
   GoogleAuthProvider,
   signOut,
   User,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile,
 } from "firebase/auth";
 import {
   doc,
@@ -85,6 +88,7 @@ import {
   UserCheck,
   Home,
   ArrowLeft,
+  ArrowRight,
 } from "lucide-react";
 
 interface Point {
@@ -135,7 +139,63 @@ interface BoardPage {
 }
 
 export default function App() {
-  const [view, setView] = useState<"landing" | "whiteboard" | "privacy" | "contact">("landing");
+  const [view, setView] = useState<"landing" | "whiteboard" | "privacy" | "contact">(() => {
+    const path = window.location.pathname;
+    if (path.endsWith("/privacy") || path.endsWith("/privacy-policy")) return "privacy";
+    if (path.endsWith("/contact") || path.endsWith("/contact-us")) return "contact";
+    if (path.endsWith("/whiteboard")) return "whiteboard";
+    return "landing";
+  });
+
+  const basePath = useMemo(() => {
+    const path = window.location.pathname;
+    let base = path;
+    const suffixes = ["/privacy", "/privacy-policy", "/contact", "/contact-us", "/whiteboard"];
+    for (const suffix of suffixes) {
+      if (base.endsWith(suffix)) {
+        base = base.slice(0, -suffix.length);
+        break;
+      }
+    }
+    if (base.endsWith("/")) {
+      base = base.slice(0, -1);
+    }
+    return base;
+  }, []);
+
+  // Synchronize browser forward/back buttons with the view state
+  useEffect(() => {
+    const handleLocationChange = () => {
+      const path = window.location.pathname;
+      if (path.endsWith("/privacy") || path.endsWith("/privacy-policy")) {
+        setView("privacy");
+      } else if (path.endsWith("/contact") || path.endsWith("/contact-us")) {
+        setView("contact");
+      } else if (path.endsWith("/whiteboard")) {
+        setView("whiteboard");
+      } else {
+        setView("landing");
+      }
+    };
+
+    window.addEventListener("popstate", handleLocationChange);
+    return () => window.removeEventListener("popstate", handleLocationChange);
+  }, []);
+
+  // Update URL pathname whenever the view state changes
+  useEffect(() => {
+    const currentPath = window.location.pathname;
+    let targetPath = basePath || "/";
+    if (view === "privacy") targetPath = `${basePath}/privacy`;
+    else if (view === "contact") targetPath = `${basePath}/contact`;
+    else if (view === "whiteboard") targetPath = `${basePath}/whiteboard`;
+    else targetPath = basePath || "/";
+
+    if (currentPath !== targetPath) {
+      window.history.pushState({}, "", targetPath);
+    }
+  }, [view]);
+
   const [activeSubject, setActiveSubject] = useState<
     "math" | "physics" | "chemistry" | "english" | "arts"
   >("math");
@@ -270,6 +330,16 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
+  // Custom Email/Password Auth state
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [authEmail, setAuthEmail] = useState<string>("");
+  const [authPassword, setAuthPassword] = useState<string>("");
+  const [authDisplayName, setAuthDisplayName] = useState<string>("");
+  const [authError, setAuthError] = useState<string>("");
+  const [authErrorCode, setAuthErrorCode] = useState<string>("");
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
+
   // Interactive landing page states
   const [mockupTab, setMockupTab] = useState<"draw" | "geo" | "notes" | "export">("draw");
   const [mockPenColor, setMockPenColor] = useState<string>("#4f46e5");
@@ -343,11 +413,19 @@ export default function App() {
     setView("whiteboard");
   };
 
+  // Load custom user from local storage on mount
+  useEffect(() => {
+    const savedCustomUser = localStorage.getItem("novaboard_custom_user");
+    if (savedCustomUser) {
+      setUser(JSON.parse(savedCustomUser));
+    }
+  }, []);
+
   useEffect(() => {
     let unsubscribeBoards: (() => void) | null = null;
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
       if (currentUser) {
+        setUser(currentUser);
         const q = query(collection(db, "boards"), where("ownerId", "==", currentUser.uid));
         unsubscribeBoards = onSnapshot(q, (snapshot) => {
           const boards: any[] = [];
@@ -365,11 +443,11 @@ export default function App() {
           handleFirestoreError(err, OperationType.GET, "boards");
         });
       } else {
+        setUser((prev) => (prev && (prev as any).isCustom ? prev : null));
         if (unsubscribeBoards) {
           unsubscribeBoards();
           unsubscribeBoards = null;
         }
-        setUserBoards([]);
       }
     });
 
@@ -381,12 +459,42 @@ export default function App() {
     };
   }, []);
 
+  // Set up real-time listener for custom users
+  useEffect(() => {
+    let unsubscribeBoards: (() => void) | null = null;
+    if (user && (user as any).isCustom) {
+      const q = query(collection(db, "boards"), where("ownerId", "==", user.uid));
+      unsubscribeBoards = onSnapshot(q, (snapshot) => {
+        const boards: any[] = [];
+        snapshot.forEach((docSnap) => {
+          boards.push({ id: docSnap.id, ...docSnap.data() });
+        });
+        boards.sort((a, b) => {
+          const timeA = a.updatedAt?.seconds || 0;
+          const timeB = b.updatedAt?.seconds || 0;
+          return timeB - timeA;
+        });
+        setUserBoards(boards);
+      }, (err) => {
+        handleFirestoreError(err, OperationType.GET, "boards");
+      });
+    } else if (!user) {
+      setUserBoards([]);
+    }
+    return () => {
+      if (unsubscribeBoards) {
+        unsubscribeBoards();
+      }
+    };
+  }, [user]);
+
   const handleLogin = async () => {
     if (isLoggingIn) return;
     setIsLoggingIn(true);
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
+      setIsAuthModalOpen(false); // Close auth modal on successful Google Sign-In as well
     } catch (error: any) {
       if (error && (error.code === "auth/popup-closed-by-user" || error.code === "auth/cancelled-popup-request")) {
         console.log("Sign-in popup was closed or cancelled by the user.");
@@ -398,8 +506,108 @@ export default function App() {
     }
   };
 
+  const getCustomAuthDocId = (email: string, password: string) => {
+    const cleanEmail = email.trim().toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
+    let hash = 0;
+    for (let i = 0; i < password.length; i++) {
+      const char = password.charCodeAt(i);
+      hash = (hash << 5) - hash + char;
+      hash = hash & hash;
+    }
+    return `user_${cleanEmail}_${Math.abs(hash)}`;
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthErrorCode("");
+    setIsAuthLoading(true);
+
+    try {
+      if (!authEmail || !authPassword) {
+        throw new Error(language === "ar" ? "برجاء كتابة البريد الإلكتروني وكلمة المرور" : "Please enter email and password");
+      }
+
+      const cleanEmail = authEmail.trim().toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
+
+      if (authMode === "signup") {
+        if (!authDisplayName) {
+          throw new Error(language === "ar" ? "برجاء ملء جميع الحقول المطلوبة" : "Please fill in all required fields");
+        }
+        if (authPassword.length < 6) {
+          throw new Error(language === "ar" ? "يجب أن تكون كلمة المرور 6 أحرف على الأقل" : "Password must be at least 6 characters");
+        }
+
+        // Check uniqueness via registered_emails
+        const emailDocRef = doc(db, "registered_emails", cleanEmail);
+        const emailDocSnap = await getDoc(emailDocRef);
+        if (emailDocSnap.exists()) {
+          throw new Error(language === "ar" ? "البريد الإلكتروني مستخدم بالفعل بحساب آخر!" : "Email is already registered under another account!");
+        }
+
+        // Register email
+        await setDoc(emailDocRef, { email: authEmail.trim().toLowerCase() });
+
+        // Save user profile securely using password-derived ID
+        const customDocId = getCustomAuthDocId(authEmail, authPassword);
+        const userDocRef = doc(db, "users", customDocId);
+        await setDoc(userDocRef, {
+          email: authEmail.trim().toLowerCase(),
+          displayName: authDisplayName,
+          createdAt: new Date().toISOString()
+        });
+
+        const customUser = {
+          uid: "custom_" + cleanEmail,
+          email: authEmail.trim().toLowerCase(),
+          displayName: authDisplayName,
+          isCustom: true
+        };
+
+        localStorage.setItem("novaboard_custom_user", JSON.stringify(customUser));
+        setUser(customUser);
+        setIsAuthModalOpen(false);
+        setView("whiteboard");
+      } else {
+        // Login flow
+        const customDocId = getCustomAuthDocId(authEmail, authPassword);
+        const userDocRef = doc(db, "users", customDocId);
+        const userDocSnap = await getDoc(userDocRef);
+
+        if (!userDocSnap.exists()) {
+          throw new Error(language === "ar" ? "البريد الإلكتروني أو كلمة المرور غير صحيحة!" : "Incorrect email or password!");
+        }
+
+        const userData = userDocSnap.data();
+        const customUser = {
+          uid: "custom_" + cleanEmail,
+          email: authEmail.trim().toLowerCase(),
+          displayName: userData?.displayName || authEmail,
+          isCustom: true
+        };
+
+        localStorage.setItem("novaboard_custom_user", JSON.stringify(customUser));
+        setUser(customUser);
+        setIsAuthModalOpen(false);
+        setView("whiteboard");
+      }
+
+      // Reset state inputs
+      setAuthEmail("");
+      setAuthPassword("");
+      setAuthDisplayName("");
+    } catch (error: any) {
+      console.error("Custom Email auth error:", error);
+      setAuthError(error.message || (language === "ar" ? "حدث خطأ أثناء المصادقة" : "An error occurred during authentication"));
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
   const handleLogout = async () => {
     await signOut(auth);
+    localStorage.removeItem("novaboard_custom_user");
+    setUser(null);
     setPages([]);
     setElements([]);
     setStickyNotes([]);
@@ -424,7 +632,13 @@ export default function App() {
           await updateDoc(doc(db, "boards", currentDbBoardId), boardData);
         } else {
           // ensure we have a valid board creation timestamp
-          const newDocRef = doc(collection(db, "boards"));
+          let newDocRef;
+          if ((user as any).isCustom) {
+            const uuid = Math.random().toString(36).substring(2, 15);
+            newDocRef = doc(db, "boards", `${user.uid}_${uuid}`);
+          } else {
+            newDocRef = doc(collection(db, "boards"));
+          }
           await setDoc(newDocRef, {
             ...boardData,
             createdAt: serverTimestamp(),
@@ -3037,24 +3251,17 @@ export default function App() {
                 </div>
               ) : (
                 <motion.button
-                  whileHover={isLoggingIn ? {} : { scale: 1.02 }}
-                  whileTap={isLoggingIn ? {} : { scale: 0.98 }}
-                  onClick={handleLogin}
-                  disabled={isLoggingIn}
-                  className={`px-4 py-2 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center gap-1.5 border border-indigo-500/30 ${
-                    isLoggingIn
-                      ? "bg-indigo-400 cursor-not-allowed shadow-none"
-                      : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-100 cursor-pointer"
-                  }`}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => {
+                    setIsAuthModalOpen(true);
+                    setAuthMode("login");
+                    setAuthError("");
+                  }}
+                  className="px-4 py-2 text-white rounded-xl text-xs font-bold shadow-md bg-indigo-600 hover:bg-indigo-700 shadow-indigo-100 cursor-pointer transition-all flex items-center gap-1.5 border border-indigo-500/30"
                 >
-                  {isLoggingIn ? (
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  ) : (
-                    <Globe size={14} />
-                  )}
-                  {isLoggingIn
-                    ? (language === "ar" ? "جاري الدخول..." : "Signing in...")
-                    : (language === "ar" ? "بوابة المعلم" : "Teacher Login")}
+                  <Globe size={14} />
+                  {language === "ar" ? "تسجيل الدخول / التسجيل" : "Login / Register"}
                 </motion.button>
               )}
             </div>
@@ -3132,45 +3339,47 @@ export default function App() {
                       </motion.button>
                     </>
                   ) : (
-                    <motion.button
-                      whileHover={isLoggingIn ? {} : { scale: 1.05 }}
-                      whileTap={isLoggingIn ? {} : { scale: 0.95 }}
-                      onClick={handleLogin}
-                      disabled={isLoggingIn}
-                      className={`px-8 py-4 text-white rounded-2xl text-base font-bold shadow-xl transition-all flex items-center justify-center gap-3 w-full sm:w-auto border border-indigo-500/50 ${
-                        isLoggingIn
-                          ? "bg-indigo-400 cursor-not-allowed shadow-none"
-                          : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200 hover:shadow-indigo-300/40 cursor-pointer"
-                      }`}
-                    >
-                      {isLoggingIn ? (
-                        <div className="w-5 h-5 border-3 border-white border-t-transparent rounded-full animate-spin"></div>
-                      ) : (
-                        <Globe size={20} className="animate-pulse" />
-                      )}
-                      {isLoggingIn
-                        ? (language === "ar" ? "جاري تسجيل الدخول..." : "Signing in...")
-                        : (language === "ar" ? "تسجيل الدخول الفوري للبدء (مطلوب)" : "Sign in to Start (Required)")}
-                    </motion.button>
+                    <div className="flex flex-col sm:flex-row items-center gap-3.5 w-full sm:w-auto">
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => {
+                          setIsAuthModalOpen(true);
+                          setAuthMode("signup");
+                          setAuthError("");
+                        }}
+                        className="px-8 py-4 text-white bg-indigo-600 hover:bg-indigo-700 rounded-2xl text-base font-bold shadow-xl shadow-indigo-200 hover:shadow-indigo-300/40 transition-all flex items-center justify-center gap-2.5 w-full sm:w-auto border border-indigo-500/50 cursor-pointer"
+                      >
+                        <Plus size={18} />
+                        {language === "ar" ? "إنشاء حساب جديد" : "Create New Account"}
+                      </motion.button>
+
+                      <motion.button
+                        whileHover={{ scale: 1.03 }}
+                        whileTap={{ scale: 0.97 }}
+                        onClick={createNewBoard}
+                        className="px-6 py-4 bg-white hover:bg-slate-50 text-slate-700 rounded-2xl text-base font-bold shadow-md hover:shadow-lg border border-slate-200 transition-all flex items-center justify-center gap-2.5 w-full sm:w-auto cursor-pointer"
+                      >
+                        <ArrowRight size={18} className="text-emerald-500" />
+                        {language === "ar" ? "دخول كزائر (بدون حفظ)" : "Enter as Guest (No-Save)"}
+                      </motion.button>
+                    </div>
                   )}
                 </div>
 
                 {!user && (
                   <button
-                    onClick={handleLogin}
-                    disabled={isLoggingIn}
-                    className={`text-xs font-bold transition-colors flex items-center gap-1.5 mt-1 ${isLoggingIn ? "text-indigo-400 cursor-not-allowed" : "text-slate-500 hover:text-indigo-600 cursor-pointer"}`}
+                    onClick={() => {
+                      setIsAuthModalOpen(true);
+                      setAuthMode("login");
+                      setAuthError("");
+                    }}
+                    className="text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors flex items-center gap-1.5 mt-2 cursor-pointer"
                   >
-                    {isLoggingIn ? (
-                      <div className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
-                    ) : (
-                      <Info size={13} />
-                    )}
-                    {isLoggingIn
-                      ? (language === "ar" ? "جاري تسجيل الدخول..." : "Signing in...")
-                      : (language === "ar"
-                          ? "تسجيل الدخول السريع بضغطة زر مجاناً ببريدك التعليمي أو الشخصي"
-                          : "Fast secure login with your Google educational or personal email")}
+                    <Info size={13} />
+                    {language === "ar"
+                      ? "لديك حساب بالفعل؟ اضغط هنا لتسجيل الدخول"
+                      : "Already have an account? Click here to Log In"}
                   </button>
                 )}
 
@@ -4112,20 +4321,34 @@ export default function App() {
                       : "Click to edit board title"
                   }
                 />
-                <div
-                  className={`px-1.5 sm:px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 ${isSaving ? "bg-amber-100 text-amber-700 border-amber-200/50" : "bg-emerald-100 text-emerald-700 border-emerald-200/50"} border`}
-                >
-                  {isSaving ? (
-                    <RotateCw size={9} className="animate-spin" />
-                  ) : (
-                    <Check size={9} strokeWidth={3} />
-                  )}
-                  {isSaving
-                    ? language === "ar"
-                      ? "جاري..."
-                      : "Saving..."
-                    : t.saved}
-                </div>
+                {user ? (
+                  <div
+                    className={`px-1.5 sm:px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 ${isSaving ? "bg-amber-100 text-amber-700 border-amber-200/50" : "bg-emerald-100 text-emerald-700 border-emerald-200/50"} border`}
+                  >
+                    {isSaving ? (
+                      <RotateCw size={9} className="animate-spin" />
+                    ) : (
+                      <Check size={9} strokeWidth={3} />
+                    )}
+                    {isSaving
+                      ? language === "ar"
+                        ? "جاري..."
+                        : "Saving..."
+                      : t.saved}
+                  </div>
+                ) : (
+                  <div
+                    className="px-1.5 sm:px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-bold bg-rose-50 text-rose-700 border border-rose-200/50 flex items-center gap-1"
+                    title={
+                      language === "ar"
+                        ? "أنت في وضع الزائر. لن يتم حفظ تعديلاتك سحابياً."
+                        : "You are in guest mode. Your changes will not be saved."
+                    }
+                  >
+                    <Info size={9} />
+                    {language === "ar" ? "وضع زائر (بدون حفظ)" : "Guest Mode (No-Save)"}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -4154,22 +4377,15 @@ export default function App() {
                 </div>
               ) : (
                 <button
-                  onClick={handleLogin}
-                  disabled={isLoggingIn}
-                  className={`px-2 py-1 text-white text-[10px] sm:text-xs font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1 ${
-                    isLoggingIn
-                      ? "bg-indigo-400 cursor-not-allowed"
-                      : "bg-indigo-600 hover:bg-indigo-700 cursor-pointer"
-                  }`}
+                  onClick={() => {
+                    setIsAuthModalOpen(true);
+                    setAuthMode("login");
+                    setAuthError("");
+                  }}
+                  className="px-2.5 py-1 text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg text-[10px] sm:text-xs font-bold transition-all shadow-sm flex items-center gap-1 cursor-pointer"
                 >
-                  {isLoggingIn ? (
-                    <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  ) : (
-                    <Globe size={12} />
-                  )}
-                  {isLoggingIn
-                    ? (language === "ar" ? "جاري..." : "Signing...")
-                    : (language === "ar" ? "دخول" : "Sign in")}
+                  <Globe size={12} />
+                  {language === "ar" ? "تسجيل دخول" : "Sign in"}
                 </button>
               )}
 
@@ -7021,6 +7237,196 @@ export default function App() {
           </main>
         </div>
       )}
+
+      {/* Custom Email/Password and Google Auth Modal */}
+      <AnimatePresence>
+        {isAuthModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsAuthModalOpen(false)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs"
+            />
+
+            {/* Modal Box */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-[0_25px_60px_-15px_rgba(15,23,42,0.15)] border border-slate-100 overflow-hidden z-10"
+              dir={language === "ar" ? "rtl" : "ltr"}
+            >
+              {/* Header Close button */}
+              <button
+                onClick={() => setIsAuthModalOpen(false)}
+                className="absolute top-4 right-4 rtl:right-auto rtl:left-4 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+
+              {/* Logo / Brand Header */}
+              <div className="pt-8 pb-4 px-6 text-center border-b border-slate-100 bg-slate-50/50">
+                <div className="inline-flex justify-center mb-2">
+                  <NovaBoardLogo size={40} showText={false} showTagline={false} language={language} />
+                </div>
+                <h3 className="text-lg font-black text-slate-800 tracking-tight">
+                  {language === "ar" ? "بوابة حسابات نوفا بورد" : "NovaBoard Account Portal"}
+                </h3>
+                <p className="text-xs font-semibold text-slate-500 mt-1">
+                  {language === "ar" ? "سجل دخولك لحفظ وتزامن أعمالك بدقة" : "Sign in to save and sync your work accurately"}
+                </p>
+              </div>
+
+              {/* Tab Toggles */}
+              <div className="flex border-b border-slate-100 text-sm font-bold">
+                <button
+                  onClick={() => { setAuthMode("login"); setAuthError(""); }}
+                  className={`flex-1 py-3 text-center border-b-2 transition-colors cursor-pointer ${
+                    authMode === "login"
+                      ? "border-indigo-600 text-indigo-600"
+                      : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50/30"
+                  }`}
+                >
+                  {language === "ar" ? "تسجيل الدخول" : "Sign In"}
+                </button>
+                <button
+                  onClick={() => { setAuthMode("signup"); setAuthError(""); }}
+                  className={`flex-1 py-3 text-center border-b-2 transition-colors cursor-pointer ${
+                    authMode === "signup"
+                      ? "border-indigo-600 text-indigo-600"
+                      : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50/30"
+                  }`}
+                >
+                  {language === "ar" ? "إنشاء حساب جديد" : "Sign Up"}
+                </button>
+              </div>
+
+              {/* Form Body */}
+              <form onSubmit={handleEmailAuth} className="p-6 flex flex-col gap-4">
+                {authError && (
+                  <div className="p-3.5 bg-rose-50 border border-rose-100 rounded-xl text-xs font-bold text-rose-600 flex items-start gap-2 animate-shake">
+                    <Info size={14} className="shrink-0 mt-0.5" />
+                    <span>{authError}</span>
+                  </div>
+                )}
+
+
+
+                {/* Full Name field for signup */}
+                {authMode === "signup" && (
+                  <div className="flex flex-col gap-1 text-left rtl:text-right">
+                    <label className="text-xs font-bold text-slate-600">
+                      {language === "ar" ? "الاسم بالكامل" : "Full Name"}
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={authDisplayName}
+                      onChange={(e) => setAuthDisplayName(e.target.value)}
+                      placeholder={language === "ar" ? "مثال: أ. محمد أحمد" : "e.g. John Doe"}
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-slate-50"
+                    />
+                  </div>
+                )}
+
+                {/* Email field */}
+                <div className="flex flex-col gap-1 text-left rtl:text-right">
+                  <label className="text-xs font-bold text-slate-600">
+                    {language === "ar" ? "البريد الإلكتروني" : "Email Address"}
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="teacher@example.com"
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-slate-50"
+                  />
+                </div>
+
+                {/* Password field */}
+                <div className="flex flex-col gap-1 text-left rtl:text-right">
+                  <label className="text-xs font-bold text-slate-600">
+                    {language === "ar" ? "كلمة المرور" : "Password"}
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-slate-50"
+                  />
+                </div>
+
+                {/* Submit button */}
+                <button
+                  type="submit"
+                  disabled={isAuthLoading}
+                  className={`w-full py-2.5 mt-2 rounded-xl text-sm font-black text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-100 flex items-center justify-center gap-2 cursor-pointer ${
+                    isAuthLoading ? "opacity-80 cursor-not-allowed" : ""
+                  }`}
+                >
+                  {isAuthLoading ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : authMode === "login" ? (
+                    language === "ar" ? "تسجيل الدخول" : "Sign In"
+                  ) : (
+                    language === "ar" ? "إنشاء الحساب والبدء" : "Create Account & Start"
+                  )}
+                </button>
+
+                {/* Divider */}
+                <div className="relative flex py-2 items-center">
+                  <div className="flex-grow border-t border-slate-100"></div>
+                  <span className="flex-shrink mx-4 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                    {language === "ar" ? "أو يمكنك استخدام" : "Or use"}
+                  </span>
+                  <div className="flex-grow border-t border-slate-100"></div>
+                </div>
+
+                {/* Google Sign-In button */}
+                <button
+                  type="button"
+                  onClick={handleLogin}
+                  disabled={isLoggingIn}
+                  className="w-full py-2.5 rounded-xl text-sm font-bold border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2.5 cursor-pointer shadow-sm"
+                >
+                  {isLoggingIn ? (
+                    <div className="w-4 h-4 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      {/* Google G Icon */}
+                      <svg className="w-4 h-4" viewBox="0 0 24 24">
+                        <path
+                          fill="#EA4335"
+                          d="M5.266 9.765A7.077 7.077 0 0 1 12 4.909c1.69 0 3.218.6 4.418 1.582l3.51-3.51C17.642 1.05 14.973 0 12 0 7.354 0 3.307 2.67 1.258 6.56l4.008 3.205z"
+                        />
+                        <path
+                          fill="#4285F4"
+                          d="M23.455 12.273c0-.818-.073-1.609-.209-2.373H12v4.491h6.436c-.277 1.482-1.114 2.736-2.373 3.582l3.69 2.864c2.155-1.982 3.401-4.9 3.401-8.564z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.266 14.235A7.017 7.017 0 0 1 4.909 12c0-.791.136-1.555.357-2.265L1.258 6.53A11.944 11.944 0 0 0 0 12c0 1.927.455 3.745 1.258 5.436l4.008-3.201z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 24c3.24 0 5.955-1.073 7.94-2.918l-3.69-2.864c-1.023.687-2.332 1.091-3.923 1.091-3.023 0-5.586-2.04-6.495-4.786l-4.077 3.16A11.96 11.96 0 0 0 12 24z"
+                        />
+                      </svg>
+                      <span>{language === "ar" ? "تسجيل الدخول بواسطة جوجل" : "Sign in with Google"}</span>
+                    </>
+                  )}
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </>
   );
 }

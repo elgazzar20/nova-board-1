@@ -7,7 +7,7 @@ service cloud.firestore {
     }
 
     function isSignedIn() {
-      return request.auth != null && request.auth.token.email_verified == true;
+      return request.auth != null;
     }
 
     function incoming() {
@@ -22,66 +22,38 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    function isValidBoard(data, isCreate) {
-      let hasKeys = isCreate 
-        ? data.keys().hasAll(['ownerId', 'title', 'data', 'createdAt', 'updatedAt']) && data.keys().size() == 5 
-        : true;
-      
-      let typesCorrect = 
-        data.ownerId is string && data.ownerId.size() <= 128 &&
-        data.title is string && data.title.size() <= 200 &&
-        data.data is string && data.data.size() <= 1048000 &&
-        data.createdAt is timestamp &&
-        data.updatedAt is timestamp;
-      
-      let isOwnerMatch = data.ownerId == request.auth.uid;
-
-      return hasKeys && typesCorrect && isOwnerMatch;
-    }
-
-    function isValidFeedback(data) {
-      let hasKeys = data.keys().hasAll(['name', 'subject', 'message', 'createdAt']) && data.keys().size() == 4;
-      let typesCorrect = 
-        data.name is string && data.name.size() <= 100 &&
-        data.subject is string && data.subject.size() <= 200 &&
-        data.message is string && data.message.size() <= 5000 &&
-        data.createdAt is timestamp;
-      return hasKeys && typesCorrect;
-    }
-
     match /boards/{boardId} {
-      allow get: if isSignedIn() 
-        && isValidId(boardId) 
-        && existing().ownerId == request.auth.uid;
+      allow get: if (isSignedIn() && resource != null && existing().ownerId == request.auth.uid)
+        || boardId.startsWith("guest_")
+        || boardId.startsWith("custom_")
+        || (resource != null && (existing().ownerId.startsWith("custom_") || existing().ownerId.startsWith("guest_")));
       
-      allow list: if isSignedIn() 
-        && existing().ownerId == request.auth.uid;
+      allow list: if (isSignedIn() && resource != null && existing().ownerId == request.auth.uid)
+        || (resource != null && (existing().ownerId.startsWith("custom_") || existing().ownerId.startsWith("guest_")));
         
-      allow create: if isSignedIn() 
-        && isValidId(boardId)
-        && isValidBoard(incoming(), true)
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+      allow create: if (isSignedIn() && isValidId(boardId) && incoming().ownerId == request.auth.uid)
+        || boardId.startsWith("guest_")
+        || boardId.startsWith("custom_");
         
-      allow update: if (
-        isSignedIn()
-        && isValidId(boardId)
-        && isValidBoard(incoming(), false)
-        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'data', 'updatedAt'])
-        && incoming().updatedAt == request.time
-        && incoming().createdAt == existing().createdAt
-        && incoming().ownerId == existing().ownerId
-      );
+      allow update: if (isSignedIn() && existing().ownerId == request.auth.uid)
+        || existing().ownerId.startsWith("custom_")
+        || existing().ownerId.startsWith("guest_");
         
-      allow delete: if isSignedIn() 
-        && isValidId(boardId) 
-        && existing().ownerId == request.auth.uid;
+      allow delete: if (isSignedIn() && existing().ownerId == request.auth.uid)
+        || existing().ownerId.startsWith("custom_")
+        || existing().ownerId.startsWith("guest_");
+    }
+
+    match /users/{userId} {
+      allow create, get, update: if true;
+    }
+
+    match /registered_emails/{email} {
+      allow create, get: if true;
     }
 
     match /feedback/{feedbackId} {
-      allow create: if isValidId(feedbackId)
-        && isValidFeedback(incoming())
-        && incoming().createdAt == request.time;
+      allow create: if true;
       allow read, update, delete: if false;
     }
   }
