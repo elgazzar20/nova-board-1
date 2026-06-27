@@ -1,0 +1,8 @@
+{
+  "name": "NovaBoard",
+  "description": "An elegant, interactive whiteboard application for teachers featuring drawing tools, shapes, sticky notes, and Arabic/English support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%">
+    <rect width="100%" height="100%" fill="#ffffff" rx="16"/>
+    
+  <rect width="100%" height="100%" fill="#1e293b" rx="16"/>
+  <!-- Orbits -->
+  <g fill="none" stroke="#60a5fa" stroke-width="2" opacity="0.5">
+    <ellipse cx="200" cy="200" rx="150" ry="50" transform="rotate(0 200 200)"/>
+    <ellipse cx="200" cy="200" rx="150" ry="50" transform="rotate(60 200 200)"/>
+    <ellipse cx="200" cy="200" rx="150" ry="50" transform="rotate(120 200 200)"/>
+  </g>
+  <!-- Nucleus -->
+  <g>
+    <circle cx="195" cy="195" r="10" fill="#ef4444"/>
+    <circle cx="205" cy="195" r="10" fill="#eab308"/>
+    <circle cx="200" cy="205" r="10" fill="#ef4444"/>
+    <circle cx="190" cy="205" r="10" fill="#eab308"/>
+  </g>
+  <!-- Electrons -->
+  <circle cx="50" cy="200" r="6" fill="#60a5fa"/>
+  <circle cx="280" cy="100" r="6" fill="#60a5fa"/>
+  <circle cx="120" cy="300" r="6" fill="#60a5fa"/>
+
+  </svg>
