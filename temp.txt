@@ -1,0 +1,203 @@
+2744:            } else if (tool.type === "calculator") {
+2745-              const startScale = activeToolDrag.startScale || 1.0;
+2746-              return {
+2747-                ...tool,
+2748-                scale: Math.max(0.3, Math.min(2.5, startScale * ratio)),
+2749-              };
+2750-            }
+2751-          }
+2752-          return tool;
+2753-        }),
+2754-      );
+2755-
+2756-      if (action === "drag") {
+2757-        setActiveToolDrag({
+2758-          ...activeToolDrag,
+2759-          startX: clientX,
+2760-          startY: clientY,
+2761-        });
+2762-      }
+2763-    }
+2764-  };
+2765-
+2766-  const handleGlobalMouseUp = () => {
+2767-    setDraggedNote(null);
+2768-    setDraggedFile(null);
+2769-    setResizedFile(null);
+2770-    setActiveToolDrag(null);
+2771-    setActivePanelDrag(null);
+2772-    handleMouseUp();
+2773-  };
+2774-
+2775-  const handleWheel = (e: React.WheelEvent) => {
+2776-    // Allows panning the infinite canvas with scroll wheel or trackpad
+2777-    setPanOffset((prev) => ({
+2778-      x: prev.x - e.deltaX,
+2779-      y: prev.y - e.deltaY,
+2780-    }));
+2781-  };
+2782-
+2783-  // Convert canvas to image and trigger download
+2784-  const handleDownload = () => {
+2785-    const canvas = canvasRef.current;
+2786-    if (!canvas) return;
+2787-
+2788-    // Create a temporary canvas with actual slate white background to save nicely
+2789-    const tempCanvas = document.createElement("canvas");
+2790-    tempCanvas.width = canvas.width;
+2791-    tempCanvas.height = canvas.height;
+2792-    const tempCtx = tempCanvas.getContext("2d");
+2793-    if (!tempCtx) return;
+2794-
+2795-    // Background
+2796-    tempCtx.fillStyle = "#f8fafc";
+2797-    tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+2798-
+2799-    // Draw Grid if chosen
+2800-    if (gridType === "dots") {
+2801-      tempCtx.fillStyle = "#cbd5e1";
+2802-      for (let x = 0; x < tempCanvas.width; x += 24) {
+2803-        for (let y = 0; y < tempCanvas.height; y += 24) {
+2804-          tempCtx.fillRect(x, y, 1.5, 1.5);
+2805-        }
+2806-      }
+2807-    } else if (gridType === "grid") {
+2808-      tempCtx.strokeStyle = "#e2e8f0";
+2809-      tempCtx.lineWidth = 1;
+2810-      for (let x = 0; x < tempCanvas.width; x += 24) {
+2811-        tempCtx.beginPath();
+2812-        tempCtx.moveTo(x, 0);
+2813-        tempCtx.lineTo(x, tempCanvas.height);
+2814-        tempCtx.stroke();
+2815-      }
+2816-      for (let y = 0; y < tempCanvas.height; y += 24) {
+2817-        tempCtx.beginPath();
+2818-        tempCtx.moveTo(0, y);
+2819-        tempCtx.lineTo(tempCanvas.width, y);
+2820-        tempCtx.stroke();
+2821-      }
+2822-    }
+2823-
+2824-    // Copy drawing
+2825-    tempCtx.drawImage(canvas, 0, 0);
+2826-
+2827-    // Download image
+2828-    const link = document.createElement("a");
+2829-    link.download = `${boardTitle.trim().replace(/\s+/g, "_") || "novaboard_lesson"}.png`;
+2830-    link.href = tempCanvas.toDataURL("image/png");
+2831-    link.click();
+2832-  };
+2833-
+2834-  // Generating fully customized single-file Blogger embed code!
+2835-  const bloggerCode = useMemo(() => {
+2836-    return `<!DOCTYPE html>
+2837-<html lang="${language}" dir="${language === "ar" ? "rtl" : "ltr"}">
+2838-<head>
+2839-  <meta charset="UTF-8">
+2840-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+2841-  <title>NovaBoard | Premium SaaS Interactive Whiteboard</title>
+2842-  <!-- Tailwind CSS -->
+2843-  <script src="https://cdn.tailwindcss.com"></script>
+2844-  <!-- Google Fonts for modern Arabic & English -->
+--
+5478:                if (tool.type === "calculator") {
+5479-                  return (
+5480-                    <div
+5481-                      key={tool.id}
+5482-                      className="absolute pointer-events-auto cursor-grab active:cursor-grabbing select-none"
+5483-                      style={{
+5484-                        left: `${tool.x}px`,
+5485-                        top: `${tool.y}px`,
+5486-                        transform: `translate(-50%, -50%) scale(${tool.scale || 1.0}) rotate(${tool.rotation}deg)`,
+5487-                        transformOrigin: "center center",
+5488-                      }}
+5489-                      onMouseDown={(e) => {
+5490-                        if ((e.target as HTMLElement).closest("button")) return;
+5491-                        handleToolDragStart(tool.id, "drag", e);
+5492-                      }}
+5493-                      onTouchStart={(e) => {
+5494-                        if ((e.target as HTMLElement).closest("button")) return;
+5495-                        handleToolDragStart(tool.id, "drag", e);
+5496-                      }}
+5497-                    >
+5498-                      {/* Floating Control Toolbar for easy scale, rotate, close */}
+5499-                      <div 
+5500-                        onMouseDown={(e) => e.stopPropagation()} 
+5501-                        onTouchStart={(e) => e.stopPropagation()}
+5502-                        className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md border border-slate-200 shadow-lg px-2.5 py-1.5 rounded-full flex items-center gap-1.5 z-50 pointer-events-auto"
+5503-                      >
+5504-                        {/* Drag Handle icon */}
+5505-                        <div 
+5506-                          onMouseDown={(e) => {
+5507-                            e.stopPropagation();
+5508-                            handleToolDragStart(tool.id, "drag", e);
+5509-                          }}
+5510-                          onTouchStart={(e) => {
+5511-                            e.stopPropagation();
+5512-                            handleToolDragStart(tool.id, "drag", e);
+5513-                          }}
+5514-                          className="p-1 text-slate-400 cursor-grab active:cursor-grabbing hover:text-indigo-600 rounded-full hover:bg-slate-50"
+5515-                          title={language === "ar" ? "اسحب لتحريك الآلة" : "Drag to move"}
+5516-                        >
+5517-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+5518-                            <circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/>
+5519-                          </svg>
+5520-                        </div>
+5521-                        
+5522-                        {/* Zoom Out Button */}
+5523-                        <button
+5524-                          onClick={(e) => {
+5525-                            e.stopPropagation();
+5526-                            setGeoTools(prev => prev.map(t => t.id === tool.id ? { ...t, scale: Math.max(0.4, (t.scale || 1.0) - 0.1) } : t));
+5527-                          }}
+5528-                          className="w-6 h-6 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-xs cursor-pointer"
+5529-                          title={language === "ar" ? "تصغير" : "Shrink"}
+5530-                        >
+5531-                          ー
+5532-                        </button>
+5533-
+5534-                        {/* Zoom Indicator */}
+5535-                        <span className="text-[10px] font-bold text-slate-500 select-none min-w-[28px] text-center">
+5536-                          {Math.round((tool.scale || 1.0) * 100)}%
+5537-                        </span>
+5538-
+5539-                        {/* Zoom In Button */}
+5540-                        <button
+5541-                          onClick={(e) => {
+5542-                            e.stopPropagation();
+5543-                            setGeoTools(prev => prev.map(t => t.id === tool.id ? { ...t, scale: Math.min(2.0, (t.scale || 1.0) + 0.1) } : t));
+5544-                          }}
+5545-                          className="w-6 h-6 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-xs cursor-pointer"
+5546-                          title={language === "ar" ? "تكبير" : "Enlarge"}
+5547-                        >
+5548-                          ＋
+5549-                        </button>
+5550-
+5551-                        <div className="w-px h-3.5 bg-slate-200" />
+5552-
+5553-                        {/* Rotate Button (interactive dragging to rotate) */}
+5554-                        <button
+5555-                          onMouseDown={(e) => {
+5556-                            e.stopPropagation();
+5557-                            handleToolDragStart(tool.id, "rotate", e);
+5558-                          }}
+5559-                          onTouchStart={(e) => {
+5560-                            e.stopPropagation();
+5561-                            handleToolDragStart(tool.id, "rotate", e);
+5562-                          }}
+5563-                          className="w-6 h-6 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-500 hover:text-indigo-600 cursor-grab active:cursor-grabbing"
+5564-                          title={language === "ar" ? "اسحب لتدوير الآلة" : "Drag to Rotate"}
+5565-                        >
+5566-                          <RotateCw size={12} />
+5567-                        </button>
+5568-
+5569-                        {/* Drag to Scale Button */}
+5570-                        <button
+5571-                          onMouseDown={(e) => {
+5572-                            e.stopPropagation();
+5573-                            handleToolDragStart(tool.id, "resize", e);
+5574-                          }}
+5575-                          onTouchStart={(e) => {
+5576-                            e.stopPropagation();
+5577-                            handleToolDragStart(tool.id, "resize", e);
+5578-                          }}
