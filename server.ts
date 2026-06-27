@@ -60,11 +60,11 @@ app.post("/api/ai-pen/recognize", async (req, res) => {
     };
 
     const textPart = {
-      text: "You are an expert handwriting recognition engine. Identify and transcribe the letters, words, or drawings of characters in this image. They can be in Arabic, English, symbols, numbers, math equations, or any other language. Return ONLY the final transcribed text. Do NOT wrap it in code blocks, do NOT write markdown formatting, and do NOT add any conversational preambles or explanations. If the image is blank or completely illegible, return an empty string.",
+      text: "You are a fast, high-accuracy handwriting recognition engine. Identify and transcribe the handwriting in this image, which may contain Arabic words, English words, math equations, numbers, or symbols. Output ONLY the raw plain text of the transcription. Do not include markdown codeblocks, quotes, preamble, or notes. If the image is blank, return empty.",
     };
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: { parts: [imagePart, textPart] },
     });
 

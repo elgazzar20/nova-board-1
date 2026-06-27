@@ -29,3 +29,13 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(15, 23, 42, 0.15);
 }
+
+@keyframes scanLaser {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.animate-scan {
+  animation: scanLaser 1.8s linear infinite;
+}
+

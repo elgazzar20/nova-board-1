@@ -10,6 +10,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { PrivacyPolicy } from "./components/PrivacyPolicy";
 import { ContactUs } from "./components/ContactUs";
 import { NovaBoardLogo } from "./components/NovaBoardLogo";
+import ScientificCalculator from "./components/ScientificCalculator";
 import {
   onAuthStateChanged,
   signInWithPopup,
@@ -116,12 +117,13 @@ interface StickyNote {
 
 interface GeoTool {
   id: string;
-  type: "ruler" | "protractor" | "compass" | "setsquare";
+  type: "ruler" | "protractor" | "compass" | "setsquare" | "calculator";
   x: number;
   y: number;
   rotation: number;
   width?: number;
   radius?: number;
+  scale?: number;
 }
 
 interface BoardPage {
@@ -164,12 +166,14 @@ export default function App() {
     startWidth?: number;
     startRadius?: number;
     startDist?: number;
+    startScale?: number;
   } | null>(null);
 
   // Sidebar drag & visibility states
   const [showSidebar, setShowSidebar] = useState<boolean>(true);
   const [showBottomBar, setShowBottomBar] = useState<boolean>(true);
   const [showTopBar, setShowTopBar] = useState<boolean>(true);
+  const [showTopBarHoverMenu, setShowTopBarHoverMenu] = useState<boolean>(false);
   const [showPenSettings, setShowPenSettings] = useState<boolean>(false);
   const [showEraserSettings, setShowEraserSettings] = useState<boolean>(false);
   const [eraserSize, setEraserSize] = useState<number>(30);
@@ -184,6 +188,18 @@ export default function App() {
   const [showMagicPopover, setShowMagicPopover] = useState<boolean>(false);
   const [showAppsPopover, setShowAppsPopover] = useState<boolean>(false);
   const [showExportPopover, setShowExportPopover] = useState<boolean>(false);
+
+  // States for making panel drawers draggable
+  const [panelOffsets, setPanelOffsets] = useState<{
+    [key: string]: { x: number; y: number };
+  }>({});
+  const [activePanelDrag, setActivePanelDrag] = useState<{
+    key: string;
+    startX: number;
+    startY: number;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
 
   // Elements State for Canvas drawing
   const [elements, setElements] = useState<DrawElement[]>([]);
@@ -218,6 +234,30 @@ export default function App() {
     startX: number;
     startY: number;
   } | null>(null);
+
+  // AI Pen States and Refs
+  const [isAiConverting, setIsAiConverting] = useState<boolean>(false);
+  const [aiPenStatusText, setAiPenStatusText] = useState<string>("");
+  const aiRecognitionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Auto-convert AI Pen drawing when switching tools
+  useEffect(() => {
+    if (activeTool !== "ai-pen") {
+      if (aiRecognitionTimeoutRef.current) {
+        clearTimeout(aiRecognitionTimeoutRef.current);
+      }
+      processAiPenDrawing();
+    }
+  }, [activeTool]);
+
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => {
+      if (aiRecognitionTimeoutRef.current) {
+        clearTimeout(aiRecognitionTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -552,8 +592,15 @@ export default function App() {
 
           if ((el.type === "pen" || el.type === "ai-pen") && el.points && el.points.length > 0) {
             tempCtx.moveTo(el.points[0].x, el.points[0].y);
-            for (let pIdx = 1; pIdx < el.points.length; pIdx++) {
-              tempCtx.lineTo(el.points[pIdx].x, el.points[pIdx].y);
+            if (el.points.length > 1) {
+              for (let pIdx = 1; pIdx < el.points.length - 1; pIdx++) {
+                const xc = (el.points[pIdx].x + el.points[pIdx + 1].x) / 2;
+                const yc = (el.points[pIdx].y + el.points[pIdx + 1].y) / 2;
+                tempCtx.quadraticCurveTo(el.points[pIdx].x, el.points[pIdx].y, xc, yc);
+              }
+              tempCtx.lineTo(el.points[el.points.length - 1].x, el.points[el.points.length - 1].y);
+            } else {
+              tempCtx.lineTo(el.points[0].x, el.points[0].y);
             }
             tempCtx.stroke();
           } else if (
@@ -574,7 +621,7 @@ export default function App() {
             el.text
           ) {
             tempCtx.fillStyle = el.color;
-            tempCtx.font = `bold ${el.width * 4}px sans-serif`;
+            tempCtx.font = `bold ${el.width * 4.5}px 'Cairo', 'Plus Jakarta Sans', sans-serif`;
             tempCtx.fillText(el.text, el.x1, el.y1);
           } else if (
             el.x1 !== undefined &&
@@ -1023,10 +1070,25 @@ export default function App() {
           el.points[0].x * (zoom / 100),
           el.points[0].y * (zoom / 100),
         );
-        for (let i = 1; i < el.points.length; i++) {
+        if (el.points.length > 1) {
+          for (let i = 1; i < el.points.length - 1; i++) {
+            const xc = ((el.points[i].x + el.points[i + 1].x) / 2) * (zoom / 100);
+            const yc = ((el.points[i].y + el.points[i + 1].y) / 2) * (zoom / 100);
+            ctx.quadraticCurveTo(
+              el.points[i].x * (zoom / 100),
+              el.points[i].y * (zoom / 100),
+              xc,
+              yc,
+            );
+          }
           ctx.lineTo(
-            el.points[i].x * (zoom / 100),
-            el.points[i].y * (zoom / 100),
+            el.points[el.points.length - 1].x * (zoom / 100),
+            el.points[el.points.length - 1].y * (zoom / 100),
+          );
+        } else {
+          ctx.lineTo(
+            el.points[0].x * (zoom / 100),
+            el.points[0].y * (zoom / 100),
           );
         }
         ctx.stroke();
@@ -1062,7 +1124,7 @@ export default function App() {
         el.text
       ) {
         ctx.fillStyle = el.color;
-        ctx.font = `bold ${el.width * 4 * (zoom / 100)}px sans-serif`;
+        ctx.font = `bold ${el.width * 4.5 * (zoom / 100)}px 'Cairo', 'Plus Jakarta Sans', sans-serif`;
         ctx.fillText(el.text, el.x1 * (zoom / 100), el.y1 * (zoom / 100));
       } else if (
         el.x1 !== undefined &&
@@ -1836,8 +1898,18 @@ export default function App() {
       // Create offscreen canvas for rendering the handwriting
       const canvas = document.createElement("canvas");
       const padding = 24;
-      const width = (maxX - minX) + padding * 2;
-      const height = (maxY - minY) + padding * 2;
+      const rawWidth = (maxX - minX) + padding * 2;
+      const rawHeight = (maxY - minY) + padding * 2;
+      
+      // Dynamic scaling: Limit maximum canvas size to 512px for instant base64 generation and blazing-fast Gemini OCR processing
+      const maxDim = 512;
+      let scale = 1;
+      if (rawWidth > maxDim || rawHeight > maxDim) {
+        scale = maxDim / Math.max(rawWidth, rawHeight);
+      }
+
+      const width = Math.ceil(rawWidth * scale);
+      const height = Math.ceil(rawHeight * scale);
       
       canvas.width = width;
       canvas.height = height;
@@ -1847,6 +1919,9 @@ export default function App() {
         // Clear canvas with a white background for premium contrast and perfect OCR accuracy
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, width, height);
+
+        // Apply scale context
+        ctx.scale(scale, scale);
 
         // Style the stroke drawing: clean, high-contrast black line
         ctx.strokeStyle = "#000000";
@@ -1858,8 +1933,15 @@ export default function App() {
           if (el.points && el.points.length > 0) {
             ctx.beginPath();
             ctx.moveTo(el.points[0].x - minX + padding, el.points[0].y - minY + padding);
-            for (let i = 1; i < el.points.length; i++) {
-              ctx.lineTo(el.points[i].x - minX + padding, el.points[i].y - minY + padding);
+            if (el.points.length > 1) {
+              for (let i = 1; i < el.points.length - 1; i++) {
+                const xc = (el.points[i].x + el.points[i + 1].x) / 2 - minX + padding;
+                const yc = (el.points[i].y + el.points[i + 1].y) / 2 - minY + padding;
+                ctx.quadraticCurveTo(el.points[i].x - minX + padding, el.points[i].y - minY + padding, xc, yc);
+              }
+              ctx.lineTo(el.points[el.points.length - 1].x - minX + padding, el.points[el.points.length - 1].y - minY + padding);
+            } else {
+              ctx.lineTo(el.points[0].x - minX + padding, el.points[0].y - minY + padding);
             }
             ctx.stroke();
           }
@@ -1926,7 +2008,7 @@ export default function App() {
       }
       aiRecognitionTimeoutRef.current = setTimeout(() => {
         processAiPenDrawing();
-      }, 1500);
+      }, 2500);
     }
 
     // Save state after dragging in Selection mode
@@ -2046,6 +2128,28 @@ export default function App() {
     }
   };
 
+  const handlePanelDragStart = (
+    key: string,
+    e: React.MouseEvent | React.TouchEvent,
+  ) => {
+    let clientX, clientY;
+    if ("touches" in e) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+    const currentOffset = panelOffsets[key] || { x: 0, y: 0 };
+    setActivePanelDrag({
+      key,
+      startX: clientX,
+      startY: clientY,
+      offsetX: currentOffset.x,
+      offsetY: currentOffset.y,
+    });
+  };
+
   const handleToolDragStart = (
     id: string,
     action: "drag" | "rotate" | "resize",
@@ -2079,11 +2183,33 @@ export default function App() {
         startWidth: tool.width || (tool.type === "protractor" ? 280 : 260),
         startRadius: tool.radius || 100,
         startDist: startDist || 100,
+        startScale: tool.scale || 1.0,
       });
     }
   };
 
   const handleGlobalMouseMove = (e: React.MouseEvent | React.TouchEvent) => {
+    if (activePanelDrag) {
+      let clientX, clientY;
+      if ("touches" in e) {
+        if (e.touches.length === 0) return;
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = e.clientX;
+        clientY = e.clientY;
+      }
+      const dx = clientX - activePanelDrag.startX;
+      const dy = clientY - activePanelDrag.startY;
+      setPanelOffsets((prev) => ({
+        ...prev,
+        [activePanelDrag.key]: {
+          x: activePanelDrag.offsetX + dx,
+          y: activePanelDrag.offsetY + dy,
+        },
+      }));
+    }
+
     if (draggedNote) {
       let clientX, clientY;
       if ("touches" in e) {
@@ -2181,6 +2307,12 @@ export default function App() {
                 ...tool,
                 radius: Math.max(40, Math.min(400, startRadius * ratio)),
               };
+            } else if (tool.type === "calculator") {
+              const startScale = activeToolDrag.startScale || 1.0;
+              return {
+                ...tool,
+                scale: Math.max(0.3, Math.min(2.5, startScale * ratio)),
+              };
             }
           }
           return tool;
@@ -2200,6 +2332,7 @@ export default function App() {
   const handleGlobalMouseUp = () => {
     setDraggedNote(null);
     setActiveToolDrag(null);
+    setActivePanelDrag(null);
     handleMouseUp();
   };
 
@@ -4787,6 +4920,239 @@ export default function App() {
                     </div>
                   );
                 }
+
+                if (tool.type === "calculator") {
+                  return (
+                    <div
+                      key={tool.id}
+                      className="absolute pointer-events-auto cursor-grab active:cursor-grabbing select-none"
+                      style={{
+                        left: `${tool.x}px`,
+                        top: `${tool.y}px`,
+                        transform: `translate(-50%, -50%) scale(${tool.scale || 1.0}) rotate(${tool.rotation}deg)`,
+                        transformOrigin: "center center",
+                      }}
+                      onMouseDown={(e) => {
+                        if ((e.target as HTMLElement).closest("button")) return;
+                        handleToolDragStart(tool.id, "drag", e);
+                      }}
+                      onTouchStart={(e) => {
+                        if ((e.target as HTMLElement).closest("button")) return;
+                        handleToolDragStart(tool.id, "drag", e);
+                      }}
+                    >
+                      {/* Floating Control Toolbar for easy scale, rotate, close */}
+                      <div 
+                        onMouseDown={(e) => e.stopPropagation()} 
+                        onTouchStart={(e) => e.stopPropagation()}
+                        className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md border border-slate-200 shadow-lg px-2.5 py-1.5 rounded-full flex items-center gap-1.5 z-50 pointer-events-auto"
+                      >
+                        {/* Drag Handle icon */}
+                        <div 
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleToolDragStart(tool.id, "drag", e);
+                          }}
+                          onTouchStart={(e) => {
+                            e.stopPropagation();
+                            handleToolDragStart(tool.id, "drag", e);
+                          }}
+                          className="p-1 text-slate-400 cursor-grab active:cursor-grabbing hover:text-indigo-600 rounded-full hover:bg-slate-50"
+                          title={language === "ar" ? "اسحب لتحريك الآلة" : "Drag to move"}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/>
+                          </svg>
+                        </div>
+                        
+                        {/* Zoom Out Button */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGeoTools(prev => prev.map(t => t.id === tool.id ? { ...t, scale: Math.max(0.4, (t.scale || 1.0) - 0.1) } : t));
+                          }}
+                          className="w-6 h-6 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-xs cursor-pointer"
+                          title={language === "ar" ? "تصغير" : "Shrink"}
+                        >
+                          ー
+                        </button>
+
+                        {/* Zoom Indicator */}
+                        <span className="text-[10px] font-bold text-slate-500 select-none min-w-[28px] text-center">
+                          {Math.round((tool.scale || 1.0) * 100)}%
+                        </span>
+
+                        {/* Zoom In Button */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGeoTools(prev => prev.map(t => t.id === tool.id ? { ...t, scale: Math.min(2.0, (t.scale || 1.0) + 0.1) } : t));
+                          }}
+                          className="w-6 h-6 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-xs cursor-pointer"
+                          title={language === "ar" ? "تكبير" : "Enlarge"}
+                        >
+                          ＋
+                        </button>
+
+                        <div className="w-px h-3.5 bg-slate-200" />
+
+                        {/* Rotate Button (interactive dragging to rotate) */}
+                        <button
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleToolDragStart(tool.id, "rotate", e);
+                          }}
+                          onTouchStart={(e) => {
+                            e.stopPropagation();
+                            handleToolDragStart(tool.id, "rotate", e);
+                          }}
+                          className="w-6 h-6 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-500 hover:text-indigo-600 cursor-grab active:cursor-grabbing"
+                          title={language === "ar" ? "اسحب لتدوير الآلة" : "Drag to Rotate"}
+                        >
+                          <RotateCw size={12} />
+                        </button>
+
+                        {/* Drag to Scale Button */}
+                        <button
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleToolDragStart(tool.id, "resize", e);
+                          }}
+                          onTouchStart={(e) => {
+                            e.stopPropagation();
+                            handleToolDragStart(tool.id, "resize", e);
+                          }}
+                          className="w-6 h-6 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-500 hover:text-indigo-600 cursor-se-resize"
+                          title={language === "ar" ? "اسحب لتكبير وتصغير الآلة" : "Drag to Scale"}
+                        >
+                          <ArrowLeftRight size={12} />
+                        </button>
+
+                        <div className="w-px h-3.5 bg-slate-200" />
+
+                        {/* Close/Remove Button */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGeoTools(geoTools.filter((t) => t.id !== tool.id));
+                          }}
+                          className="w-6 h-6 rounded-full bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-600 cursor-pointer"
+                          title={language === "ar" ? "إغلاق" : "Close"}
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
+
+                      <ScientificCalculator
+                        id={tool.id}
+                        language={language}
+                        onClose={() =>
+                          setGeoTools(geoTools.filter((t) => t.id !== tool.id))
+                        }
+                      />
+                    </div>
+                  );
+                }
+
+                if (tool.type === "setsquare") {
+                  const sSize = tool.width || 180;
+                  return (
+                    <div
+                      key={tool.id}
+                      className="absolute bg-violet-100/40 backdrop-blur-[2px] border border-violet-400 shadow-2xl pointer-events-auto cursor-grab active:cursor-grabbing select-none flex items-end justify-start"
+                      style={{
+                        left: `${tool.x}px`,
+                        top: `${tool.y}px`,
+                        width: `${sSize}px`,
+                        height: `${sSize}px`,
+                        clipPath: "polygon(0% 100%, 100% 100%, 0% 0%)",
+                        transform: `translate(-50%, -50%) rotate(${tool.rotation}deg)`,
+                        transformOrigin: "center center",
+                      }}
+                      onMouseDown={(e) =>
+                        handleToolDragStart(tool.id, "drag", e)
+                      }
+                      onTouchStart={(e) =>
+                        handleToolDragStart(tool.id, "drag", e)
+                      }
+                    >
+                      <div className="absolute inset-0 border-b-2 border-l-2 border-violet-500/50 pointer-events-none" />
+                      <div className="absolute left-1 bottom-0 h-full w-2 flex flex-col justify-between py-1 pointer-events-none">
+                        {Array.from({ length: 9 }).map((_, i) => (
+                          <div
+                            key={i}
+                            className="h-[1px] w-2 bg-violet-800/40 relative"
+                            style={{ bottom: `${i * (sSize / 9.5)}px` }}
+                          />
+                        ))}
+                      </div>
+                      <div className="absolute left-0 bottom-1 w-full h-2 flex justify-between px-1 pointer-events-none">
+                        {Array.from({ length: 9 }).map((_, i) => (
+                          <div
+                            key={i}
+                            className="w-[1px] h-2 bg-violet-800/40 relative"
+                            style={{ left: `${i * (sSize / 9.5)}px` }}
+                          />
+                        ))}
+                      </div>
+
+                      <div
+                        className="absolute bottom-3 left-3 flex flex-col items-start gap-1 bg-white/95 p-2 rounded-2xl border border-violet-100 shadow-2xl z-10 pointer-events-auto"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                      >
+                        <span className="text-[9px] font-black text-violet-950 uppercase block font-mono">
+                          {language === "ar" ? "مثلث قائم" : "Set Square"} (
+                          {(sSize / PIXELS_PER_CM).toFixed(1)} cm)
+                        </span>
+                        <div className="flex gap-1.5 mt-0.5">
+                          {/* Rotate Handle */}
+                          <button
+                            onMouseDown={(e) =>
+                              handleToolDragStart(tool.id, "rotate", e)
+                            }
+                            onTouchStart={(e) =>
+                              handleToolDragStart(tool.id, "rotate", e)
+                            }
+                            className="w-8 h-8 rounded-full bg-slate-50 border border-violet-200 flex items-center justify-center cursor-alias text-violet-700 hover:bg-violet-100 active:scale-95 shadow-md"
+                            title={language === "ar" ? "تدوير" : "Rotate"}
+                          >
+                            <RotateCw size={12} className="animate-pulse" />
+                          </button>
+                          {/* Resize Handle */}
+                          <button
+                            onMouseDown={(e) =>
+                              handleToolDragStart(tool.id, "resize", e)
+                            }
+                            onTouchStart={(e) =>
+                              handleToolDragStart(tool.id, "resize", e)
+                            }
+                            className="w-8 h-8 rounded-full bg-slate-50 border border-violet-200 flex items-center justify-center cursor-ew-resize text-violet-700 hover:bg-violet-100 active:scale-95 shadow-md"
+                            title={
+                              language === "ar"
+                                ? "تغيير الطول/الحجم ↔️"
+                                : "Resize ↔️"
+                            }
+                          >
+                            <ArrowLeftRight size={12} />
+                          </button>
+                          {/* Remove Button */}
+                          <button
+                            onClick={() =>
+                              setGeoTools(
+                                geoTools.filter((t) => t.id !== tool.id),
+                              )
+                            }
+                            className="w-8 h-8 rounded-full bg-red-100 hover:bg-red-200 text-red-700 flex items-center justify-center cursor-pointer border border-red-200 shadow-md transition-all animate-none"
+                            title={language === "ar" ? "إزالة" : "Remove"}
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
                 return null;
               })}
             </div>
@@ -4817,38 +5183,68 @@ export default function App() {
               </form>
             )}
 
-            {/* Restore Top Bar Button */}
+            {/* Restore Top Bar Button Hover Area */}
             {!showTopBar && (
-              <div className="absolute top-4 left-4 flex items-center gap-2 z-35">
-                <button
-                  onClick={() => setShowTopBar(true)}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-full p-3 shadow-2xl cursor-pointer hover:scale-105 transition-all flex items-center justify-center group"
-                  title={
-                    language === "ar" ? "إظهار شريط العنوان 🖥️" : "Show Header 🖥️"
-                  }
-                >
-                  <ChevronDown size={18} className="animate-pulse" />
-                  <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 text-[10px] font-black uppercase tracking-wider block ml-0 group-hover:ml-1.5 whitespace-nowrap">
-                    {language === "ar"
-                      ? "إظهار شريط العنوان"
-                      : "Show Header"}
-                  </span>
-                </button>
+              <div
+                onMouseEnter={() => setShowTopBarHoverMenu(true)}
+                onMouseLeave={() => setShowTopBarHoverMenu(false)}
+                className="absolute top-0 right-4 z-35 flex flex-col items-end pt-1 pb-3 px-2"
+              >
+                <AnimatePresence mode="wait">
+                  {showTopBarHoverMenu ? (
+                    <motion.div
+                      key="full-menu"
+                      initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                      transition={{ duration: 0.12 }}
+                      className="flex items-center gap-1 bg-white/95 backdrop-blur-md border border-slate-200/85 p-1 rounded-xl shadow-lg mt-2"
+                    >
+                      <button
+                        onClick={() => {
+                          setShowTopBar(true);
+                          setShowTopBarHoverMenu(false);
+                        }}
+                        className="px-2.5 py-1.5 hover:bg-slate-50 text-slate-700 hover:text-indigo-600 rounded-lg text-xs font-bold cursor-pointer transition-all flex items-center gap-1 shrink-0"
+                        title={
+                          language === "ar" ? "إظهار شريط العنوان 🖥️" : "Show Header 🖥️"
+                        }
+                      >
+                        <ChevronDown size={13} />
+                        <span className="text-[11px]">
+                          {language === "ar" ? "عرض العنوان" : "Show Header"}
+                        </span>
+                      </button>
 
-                <button
-                  onClick={() => setView("landing")}
-                  className="bg-slate-800 hover:bg-slate-900 text-white rounded-full p-3 shadow-2xl cursor-pointer hover:scale-105 transition-all flex items-center justify-center group"
-                  title={
-                    language === "ar" ? "العودة للرئيسية" : "Back to Home"
-                  }
-                >
-                  <ArrowLeft size={18} className={language === "ar" ? "rotate-180" : ""} />
-                  <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 text-[10px] font-black uppercase tracking-wider block ml-0 group-hover:ml-1.5 whitespace-nowrap">
-                    {language === "ar"
-                      ? "الرئيسية"
-                      : "Home"}
-                  </span>
-                </button>
+                      <div className="w-px h-4 bg-slate-200 mx-0.5" />
+
+                      <button
+                        onClick={() => setView("landing")}
+                        className="px-2.5 py-1.5 hover:bg-slate-50 text-slate-700 hover:text-indigo-600 rounded-lg text-xs font-bold cursor-pointer transition-all flex items-center gap-1 shrink-0"
+                        title={
+                          language === "ar" ? "العودة للرئيسية" : "Back to Home"
+                        }
+                      >
+                        <ArrowLeft size={13} className={language === "ar" ? "rotate-180" : ""} />
+                        <span className="text-[11px]">
+                          {language === "ar" ? "الرئيسية" : "Home"}
+                        </span>
+                      </button>
+                    </motion.div>
+                  ) : (
+                    <motion.button
+                      key="collapsed-trigger"
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 0.5, y: 0 }}
+                      whileHover={{ opacity: 1, scale: 1.05 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="w-9 h-6 bg-slate-900/10 hover:bg-indigo-600 hover:text-white rounded-b-md border-x border-b border-slate-200/40 text-slate-700 flex items-center justify-center cursor-pointer shadow-xs transition-all"
+                      title={language === "ar" ? "خيارات الصفحة" : "Page Options"}
+                    >
+                      <ChevronDown size={14} className="animate-pulse" />
+                    </motion.button>
+                  )}
+                </AnimatePresence>
               </div>
             )}
 
@@ -4856,57 +5252,62 @@ export default function App() {
             {!showSidebar && (
               <button
                 onClick={() => setShowSidebar(true)}
-                className="absolute bottom-4 left-1/2 -translate-x-1/2 md:left-4 md:-translate-x-0 md:top-1/2 md:-translate-y-1/2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full p-3.5 shadow-2xl cursor-pointer hover:scale-105 transition-all z-30 flex items-center justify-center group"
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 w-8 h-8 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg cursor-pointer hover:scale-110 transition-all z-30 flex items-center justify-center border border-indigo-400/30"
                 title={
                   language === "ar"
                     ? "إظهار شريط الأدوات 🛠️"
                     : "Show Sidebar 🛠️"
                 }
               >
-                <ChevronRight size={18} className="animate-pulse" />
-                <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 text-[10px] font-black uppercase tracking-wider block ml-0 group-hover:ml-1.5 whitespace-nowrap">
-                  {language === "ar" ? "الأدوات 🛠️" : "Tools 🛠️"}
-                </span>
+                <ChevronRight size={14} className="animate-pulse" />
               </button>
             )}
 
             {/* Floating Left Tool Panel - Elegant Vertical Sidebar */}
             <div
-              className={`absolute bottom-4 md:bottom-auto left-1/2 -translate-x-1/2 md:translate-x-0 md:left-6 md:top-1/2 md:-translate-y-1/2 z-30 select-none flex flex-col-reverse md:flex-row gap-2 sm:gap-4 items-center md:items-start transition-all duration-300 max-w-[95vw] md:max-w-none max-h-[85vh] flex-wrap md:flex-nowrap justify-center pb-2 sm:pb-0 ${
+              className={`absolute bottom-4 md:bottom-auto left-1/2 -translate-x-1/2 md:translate-x-0 md:left-6 md:top-1/2 z-30 select-none flex flex-col-reverse md:flex-row gap-2 sm:gap-4 items-center md:items-start transition-all duration-300 max-w-[95vw] md:max-w-none md:max-h-[85vh] flex-wrap md:flex-nowrap justify-center pb-2 sm:pb-0 ${
                 showSidebar
-                  ? "translate-y-0 opacity-100"
-                  : "translate-y-24 md:-translate-x-96 md:translate-y-0 opacity-0 pointer-events-none"
+                  ? "translate-y-0 md:translate-y-[-50%] opacity-100"
+                  : "translate-y-24 md:-translate-x-96 md:translate-y-[-50%] opacity-0 pointer-events-none"
               }`}
               dir="ltr"
             >
               {/* Primary Toolbar */}
-              <nav className="flex flex-row md:flex-col gap-1.5 sm:gap-2 p-1.5 sm:p-2 bg-white border border-slate-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.08)] rounded-2xl sm:rounded-[32px] w-auto md:w-[56px] items-center justify-center flex-wrap md:flex-nowrap shrink-0">
+              <nav 
+                className="flex flex-row md:flex-col gap-1 md:gap-1.5 p-1.5 bg-white/95 backdrop-blur-xl border border-slate-200/60 shadow-[0_20px_50px_rgba(0,0,0,0.12)] rounded-2xl sm:rounded-[24px] w-auto md:w-[52px] items-center justify-center flex-wrap md:flex-nowrap shrink-0 md:max-h-[80vh] md:overflow-y-auto scrollbar-none"
+                style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+              >
                 {/* Cursor Selection */}
                 <button
                   onClick={() => {
                     setActiveTool("select");
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${activeTool === "select" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                    activeTool === "select"
+                      ? "bg-indigo-50 text-indigo-600 shadow-[0_4px_12px_rgba(99,102,241,0.15)] border border-indigo-100 ring-2 ring-indigo-500/20"
+                      : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
                   title={language === "ar" ? "أداة التحديد" : "Selection Tool"}
                 >
-                  <MousePointer size={18} className="sm:w-5 sm:h-5" />
+                  <MousePointer size={18} className="sm:w-[20px] sm:h-[20px]" />
                 </button>
-
                 {/* Hand Pan Tool */}
                 <button
                   onClick={() => {
                     setActiveTool("pan");
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${activeTool === "pan" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                    activeTool === "pan"
+                      ? "bg-sky-50 text-sky-600 shadow-[0_4px_12px_rgba(14,165,233,0.15)] border border-sky-100 ring-2 ring-sky-500/20"
+                      : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
                   title={language === "ar" ? "أداة التحريك" : "Pan Board"}
                 >
-                  <Hand size={18} className="sm:w-5 sm:h-5" />
+                  <Hand size={18} className="sm:w-[20px] sm:h-[20px]" />
                 </button>
-
-                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
-
+                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200/80 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
                 {/* Freehand Pencil (yellow marker body style) */}
                 <button
                   onClick={() => {
@@ -4918,17 +5319,45 @@ export default function App() {
                     }
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer relative ${activeTool === "pen" ? "bg-amber-50 text-amber-600 shadow-sm border border-amber-100 ring-2 ring-amber-200/50" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer relative ${
+                    activeTool === "pen"
+                      ? "bg-amber-50 text-amber-600 shadow-[0_4px_12px_rgba(245,158,11,0.15)] border border-amber-100 ring-2 ring-amber-200/50"
+                      : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
                   title={
                     language === "ar"
                       ? "القلم الحر • اضغط مرتين لفتح الإعدادات"
                       : "Freehand Pen • Double click for settings"
                   }
                 >
-                  <PenTool size={18} className="sm:w-5 sm:h-5" />
+                  <PenTool size={18} className="sm:w-[20px] sm:h-[20px]" />
                   <div className="absolute bottom-1 right-1 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-amber-500" />
                 </button>
-
+                {/* AI Smart Pen (distinctive, glowing high-tech design) */}
+                <button
+                  onClick={() => {
+                    setActiveTool("ai-pen");
+                    setOpenShapesPanel(null);
+                    setShowPenSettings(false);
+                    setShowEraserSettings(false);
+                  }}
+                  className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer relative overflow-visible ${
+                    activeTool === "ai-pen"
+                      ? "bg-purple-600 text-white shadow-[0_0_15px_rgba(168,85,247,0.55)] border border-purple-400 ring-2 ring-purple-300"
+                      : "text-purple-600 bg-purple-50/50 hover:bg-purple-100/70 border border-purple-200/40"
+                  }`}
+                  title={
+                    language === "ar"
+                      ? "قلم الذكاء الاصطناعي السحري • اكتب بيدك ليتحول لنص منسق"
+                      : "Magic AI Pen • Write with your hand to convert to styled text"
+                  }
+                >
+                  <Sparkles size={18} className={`sm:w-[20px] sm:h-[20px] ${activeTool === "ai-pen" ? "animate-pulse" : ""}`} />
+                  {/* Distinctive AI Badge */}
+                  <span className="absolute -top-1 -right-1 bg-gradient-to-r from-amber-400 to-amber-500 text-[7px] text-white font-extrabold px-1 py-0.25 rounded-md border border-white uppercase shadow-xs scale-90">
+                    AI
+                  </span>
+                </button>
                 {/* Eraser */}
                 <button
                   onClick={() => {
@@ -4940,16 +5369,19 @@ export default function App() {
                     }
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer relative ${activeTool === "eraser" ? "bg-slate-100 text-slate-800 shadow-sm border border-slate-200 ring-2 ring-slate-300/30" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer relative ${
+                    activeTool === "eraser"
+                      ? "bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.15)] border border-slate-800 ring-2 ring-slate-400/20"
+                      : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
                   title={
                     language === "ar"
                       ? "الممحاة الذكية • اضغط مرتين لفتح الإعدادات"
                       : "Eraser Tool • Double click for settings"
                   }
                 >
-                  <Eraser size={18} className="sm:w-5 sm:h-5" />
+                  <Eraser size={18} className="sm:w-[20px] sm:h-[20px]" />
                 </button>
-
                 {/* 3D-styled Geometric Shapes Menu button */}
                 <button
                   onClick={() => {
@@ -4975,10 +5407,10 @@ export default function App() {
                       setActiveTool("rect");
                     }
                   }}
-                  className={`w-9 h-9 sm:w-11 sm:h-11 flex flex-col items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer relative ${
+                  className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex flex-col items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer relative ${
                     showShapesSubmenu
-                      ? "bg-gradient-to-b from-indigo-500 to-indigo-600 text-white shadow-[0_3px_0_0_#312e81] sm:shadow-[0_4px_0_0_#312e81] border-t border-indigo-400 translate-y-[-2px] active:translate-y-[2px] active:shadow-none font-sans"
-                      : "bg-white text-slate-600 border border-slate-200 shadow-[0_2px_0_0_#cbd5e1] sm:shadow-[0_3px_0_0_#cbd5e1] hover:bg-slate-50 active:translate-y-[2px] active:shadow-none font-sans"
+                      ? "bg-gradient-to-b from-indigo-500 to-indigo-600 text-white shadow-[0_3px_0_0_#312e81] border-t border-indigo-400 translate-y-[-2px]"
+                      : "bg-white text-slate-600 border border-slate-200 shadow-[0_2px_0_0_#cbd5e1] hover:bg-slate-50"
                   }`}
                   title={
                     language === "ar"
@@ -4990,38 +5422,38 @@ export default function App() {
                     size={18}
                     className={
                       showShapesSubmenu
-                        ? "text-white drop-shadow-sm sm:w-5 sm:h-5"
-                        : "text-indigo-600 sm:w-5 sm:h-5"
+                        ? "text-white sm:w-[20px] sm:h-[20px]"
+                        : "text-indigo-600 sm:w-[20px] sm:h-[20px]"
                     }
                   />
                   <div className="absolute -bottom-1 -right-1 bg-amber-500 text-[7px] sm:text-[8px] text-white font-black px-1 rounded-full scale-90 border border-white">
                     3D
                   </div>
                 </button>
-
                 {/* Add Text */}
                 <button
                   onClick={() => {
                     setActiveTool("text");
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${activeTool === "text" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                    activeTool === "text"
+                      ? "bg-blue-50 text-blue-600 shadow-[0_4px_12px_rgba(37,99,235,0.15)] border border-blue-100 ring-2 ring-blue-500/20"
+                      : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
                   title={language === "ar" ? "إضافة نص" : "Add Text"}
                 >
-                  <Type size={18} className="sm:w-5 sm:h-5" />
+                  <Type size={18} className="sm:w-[20px] sm:h-[20px]" />
                 </button>
-
                 {/* Add Sticky Note (Yellow origami folded style) */}
                 <button
                   onClick={handleAddSticky}
-                  className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl text-amber-500 hover:bg-amber-50 hover:text-amber-600 transition-all cursor-pointer relative"
+                  className="w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl text-amber-500 hover:bg-amber-50 hover:text-amber-600 transition-all cursor-pointer relative"
                   title={language === "ar" ? "ملاحظة لاصقة" : "Add Sticky Note"}
                 >
-                  <StickyIcon size={18} className="fill-amber-50 sm:w-5 sm:h-5" />
+                  <StickyIcon size={18} className="fill-amber-50 sm:w-[20px] sm:h-[20px]" />
                 </button>
-
-                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
-
+                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200/80 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
                 <div className="relative">
                   <button
                     onClick={() => {
@@ -5030,15 +5462,18 @@ export default function App() {
                       setShowMagicPopover(false);
                       setShowAppsPopover(false);
                     }}
-                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${showExportPopover ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                      showExportPopover
+                        ? "bg-emerald-50 text-emerald-600 border border-emerald-100 ring-2 ring-emerald-500/20"
+                        : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
                     title={
                       language === "ar" ? "تصدير السبورة" : "Export Whiteboard"
                     }
                   >
-                    <Download size={18} className="sm:w-5 sm:h-5" />
+                    <Download size={18} className="sm:w-[20px] sm:h-[20px]" />
                   </button>
                 </div>
-
                 {/* Magic box widgets (ruler, protractor, math graph) */}
                 <div className="relative">
                   <button
@@ -5047,65 +5482,74 @@ export default function App() {
                       setShowFolderPopover(false);
                       setShowAppsPopover(false);
                     }}
-                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${showMagicPopover ? "bg-purple-50 text-purple-600 border border-purple-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                      showMagicPopover
+                        ? "bg-purple-50 text-purple-600 border border-purple-100 ring-2 ring-purple-500/20"
+                        : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
                     title={
                       language === "ar"
                         ? "صندوق الأدوات السحري"
                         : "Magic Tool Box"
                     }
                   >
-                    <Wand2 size={18} className="sm:w-5 sm:h-5" />
+                    <Wand2 size={18} className="sm:w-[20px] sm:h-[20px]" />
                   </button>
                 </div>
-
                 {/* Web Browser simulation (Now fully interactive) */}
                 <button
                   onClick={() => {
                     setShowBrowserHelper(!showBrowserHelper);
                   }}
-                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${showBrowserHelper ? "bg-sky-50 text-sky-600 border border-sky-100 ring-2 ring-sky-200/50" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl transition-all cursor-pointer ${
+                    showBrowserHelper
+                      ? "bg-sky-50 text-sky-600 border border-sky-100 ring-2 ring-sky-200/50"
+                      : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
                   title={
                     language === "ar"
                       ? "مستعرض الويب المساعد والآلة الحاسبة"
                       : "Web Resource Browser & Calculator"
                   }
                 >
-                  <Globe size={18} className="sm:w-5 sm:h-5" />
+                  <Globe size={18} className="sm:w-[20px] sm:h-[20px]" />
                 </button>
-
-                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
-
-                {/* Undo */}
-                <button
-                  onClick={handleUndo}
-                  disabled={historyIndex <= 0}
-                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${historyIndex > 0 ? "text-slate-600 hover:bg-slate-50" : "text-slate-300 cursor-not-allowed"}`}
-                  title={language === "ar" ? "تراجع" : "Undo"}
-                >
-                  <Undo2 size={16} className="sm:w-4 sm:h-4" />
-                </button>
-
-                {/* Redo */}
-                <button
-                  onClick={handleRedo}
-                  disabled={historyIndex >= history.length - 1}
-                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${historyIndex < history.length - 1 ? "text-slate-600 hover:bg-slate-50" : "text-slate-300 cursor-not-allowed"}`}
-                  title={language === "ar" ? "إعادة" : "Redo"}
-                >
-                  <Redo2 size={16} className="sm:w-4 sm:h-4" />
-                </button>
-
-                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
-
+                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200/80 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
+                {/* Undo & Redo (grouped horizontally to optimize sidebar height) */}
+                <div className="flex flex-row md:flex-row gap-1 items-center justify-center shrink-0">
+                  {/* Undo */}
+                  <button
+                    onClick={handleUndo}
+                    disabled={historyIndex <= 0}
+                    className={`w-7 h-7 sm:w-[28px] sm:h-[28px] flex items-center justify-center rounded-lg transition-all cursor-pointer ${
+                      historyIndex > 0 ? "text-slate-600 hover:bg-slate-50" : "text-slate-200 cursor-not-allowed"
+                    }`}
+                    title={language === "ar" ? "تراجع" : "Undo"}
+                  >
+                    <Undo2 size={14} className="sm:w-3.5 sm:h-3.5" />
+                  </button>
+                  {/* Redo */}
+                  <button
+                    onClick={handleRedo}
+                    disabled={historyIndex >= history.length - 1}
+                    className={`w-7 h-7 sm:w-[28px] sm:h-[28px] flex items-center justify-center rounded-lg transition-all cursor-pointer ${
+                      historyIndex < history.length - 1 ? "text-slate-600 hover:bg-slate-50" : "text-slate-200 cursor-not-allowed"
+                    }`}
+                    title={language === "ar" ? "إعادة" : "Redo"}
+                  >
+                    <Redo2 size={14} className="sm:w-3.5 sm:h-3.5" />
+                  </button>
+                </div>
+                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200/80 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
                 {/* Hide Sidebar Button */}
                 <button
                   onClick={() => setShowSidebar(false)}
-                  className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all cursor-pointer shrink-0"
+                  className="w-8 h-8 sm:w-[38px] sm:h-[38px] flex items-center justify-center rounded-xl sm:rounded-2xl text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all cursor-pointer shrink-0"
                   title={
                     language === "ar" ? "إخفاء شريط الأدوات" : "Hide Toolbar"
                   }
                 >
-                  <XCircle size={18} className="sm:w-5 sm:h-5" />
+                  <XCircle size={18} className="sm:w-[20px] sm:h-[20px]" />
                 </button>
               </nav>
 
@@ -5405,16 +5849,31 @@ export default function App() {
 
               {/* Popover panel for ALL 2D Shapes */}
               {openShapesPanel === "2d" && (
-                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[144px] top-auto md:top-1/2 md:-translate-y-1/2 bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-72 z-40 animate-in zoom-in-95 duration-150">
-                  <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
-                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                      {language === "ar"
-                        ? "الأشكال ثنائية الأبعاد"
-                        : "2D Shapes List"}
+                <div 
+                  style={{
+                    transform: `translate(${panelOffsets["2d"]?.x || 0}px, ${panelOffsets["2d"]?.y || 0}px)`,
+                  }}
+                  className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-4 md:left-[144px] top-auto md:top-[120px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-72 z-40 animate-in zoom-in-95 duration-150"
+                >
+                  <div 
+                    onMouseDown={(e) => handlePanelDragStart("2d", e)}
+                    onTouchStart={(e) => handlePanelDragStart("2d", e)}
+                    className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100 cursor-grab active:cursor-grabbing select-none"
+                    title={language === "ar" ? "اسحب لتحريك الدرج ✥" : "Drag to move panel ✥"}
+                  >
+                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide flex items-center gap-1">
+                      <span className="text-indigo-600">✥</span>
+                      <span>
+                        {language === "ar"
+                          ? "الأشكال ثنائية الأبعاد"
+                          : "2D Shapes List"}
+                      </span>
                     </h4>
                     <button
                       onClick={() => setOpenShapesPanel(null)}
-                      className="text-slate-400 hover:text-slate-600 font-bold text-sm"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      className="text-slate-400 hover:text-slate-600 font-bold text-lg px-1.5 hover:bg-slate-50 rounded"
                     >
                       ×
                     </button>
@@ -5526,16 +5985,31 @@ export default function App() {
 
               {/* Popover panel for ALL 3D Shapes */}
               {openShapesPanel === "3d" && (
-                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[144px] top-auto md:top-1/2 md:-translate-y-1/2 bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-72 z-40 animate-in zoom-in-95 duration-150">
-                  <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
-                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                      {language === "ar"
-                        ? "المجسمات ثلاثية الأبعاد"
-                        : "3D Wireframes"}
+                <div 
+                  style={{
+                    transform: `translate(${panelOffsets["3d"]?.x || 0}px, ${panelOffsets["3d"]?.y || 0}px)`,
+                  }}
+                  className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-4 md:left-[144px] top-auto md:top-[120px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-72 z-40 animate-in zoom-in-95 duration-150"
+                >
+                  <div 
+                    onMouseDown={(e) => handlePanelDragStart("3d", e)}
+                    onTouchStart={(e) => handlePanelDragStart("3d", e)}
+                    className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100 cursor-grab active:cursor-grabbing select-none"
+                    title={language === "ar" ? "اسحب لتحريك الدرج ✥" : "Drag to move panel ✥"}
+                  >
+                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide flex items-center gap-1">
+                      <span className="text-blue-600">✥</span>
+                      <span>
+                        {language === "ar"
+                          ? "المجسمات ثلاثية الأبعاد"
+                          : "3D Wireframes"}
+                      </span>
                     </h4>
                     <button
                       onClick={() => setOpenShapesPanel(null)}
-                      className="text-slate-400 hover:text-slate-600 font-bold text-sm"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      className="text-slate-400 hover:text-slate-600 font-bold text-lg px-1.5 hover:bg-slate-50 rounded"
                     >
                       ×
                     </button>
@@ -5605,22 +6079,57 @@ export default function App() {
                         </span>
                       </button>
                     ))}
+
+                    {/* AI Smart Drawing Option */}
+                    <div className="col-span-2 mt-2 pt-2 border-t border-slate-100">
+                      <button
+                        onClick={() => {
+                          setActiveTool("ai-pen");
+                          setOpenShapesPanel(null);
+                        }}
+                        className={`w-full flex items-center justify-center gap-2 p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                          activeTool === "ai-pen"
+                            ? "bg-purple-600 border-purple-600 text-white shadow-md"
+                            : "bg-purple-50 border-purple-100 hover:bg-purple-100 text-purple-700"
+                        }`}
+                      >
+                        <Sparkles size={14} className={activeTool === "ai-pen" ? "animate-pulse" : ""} />
+                        <span className="text-xs font-bold">
+                          {language === "ar" ? "الرسم الذكي بالذكاء الاصطناعي 🪄" : "AI Smart Drawing 🪄"}
+                        </span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
 
               {/* Popover panel for Export */}
               {showExportPopover && (
-                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[70px] top-auto md:top-[140px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-56 z-40 animate-in zoom-in-95 duration-150">
-                  <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
-                    <h4 className="text-xs font-bold text-slate-800">
-                      {language === "ar"
-                        ? "تصدير السبورة"
-                        : "Export Whiteboard"}
+                <div 
+                  style={{
+                    transform: `translate(${panelOffsets["export"]?.x || 0}px, ${panelOffsets["export"]?.y || 0}px)`,
+                  }}
+                  className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-4 md:left-[70px] top-auto md:top-[140px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-56 z-40 animate-in zoom-in-95 duration-150"
+                >
+                  <div 
+                    onMouseDown={(e) => handlePanelDragStart("export", e)}
+                    onTouchStart={(e) => handlePanelDragStart("export", e)}
+                    className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100 cursor-grab active:cursor-grabbing select-none"
+                    title={language === "ar" ? "اسحب لتحريك الدرج ✥" : "Drag to move panel ✥"}
+                  >
+                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                      <span className="text-emerald-600">✥</span>
+                      <span>
+                        {language === "ar"
+                          ? "تصدير السبورة"
+                          : "Export Whiteboard"}
+                      </span>
                     </h4>
                     <button
                       onClick={() => setShowExportPopover(false)}
-                      className="text-slate-400 hover:text-slate-600 font-bold text-sm"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      className="text-slate-400 hover:text-slate-600 font-bold text-lg px-1.5 hover:bg-slate-50 rounded"
                     >
                       ×
                     </button>
@@ -5652,16 +6161,31 @@ export default function App() {
 
               {/* Popover panel for Magic Tools */}
               {showMagicPopover && (
-                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[70px] top-auto md:top-[230px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-60 z-40 animate-in zoom-in-95 duration-150">
-                  <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
-                    <h4 className="text-xs font-bold text-slate-800">
-                      {language === "ar"
-                        ? "صندوق الأدوات السحري"
-                        : "Magic Box Tools"}
+                <div 
+                  style={{
+                    transform: `translate(${panelOffsets["magic"]?.x || 0}px, ${panelOffsets["magic"]?.y || 0}px)`,
+                  }}
+                  className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-4 md:left-[70px] top-auto md:top-[230px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-60 z-40 animate-in zoom-in-95 duration-150"
+                >
+                  <div 
+                    onMouseDown={(e) => handlePanelDragStart("magic", e)}
+                    onTouchStart={(e) => handlePanelDragStart("magic", e)}
+                    className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100 cursor-grab active:cursor-grabbing select-none"
+                    title={language === "ar" ? "اسحب لتحريك الدرج ✥" : "Drag to move panel ✥"}
+                  >
+                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                      <span className="text-purple-600">✥</span>
+                      <span>
+                        {language === "ar"
+                          ? "صندوق الأدوات السحري"
+                          : "Magic Box Tools"}
+                      </span>
                     </h4>
                     <button
                       onClick={() => setShowMagicPopover(false)}
-                      className="text-slate-400 hover:text-slate-600 font-bold text-sm"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      className="text-slate-400 hover:text-slate-600 font-bold text-lg px-1.5 hover:bg-slate-50 rounded"
                     >
                       ×
                     </button>
@@ -5778,22 +6302,59 @@ export default function App() {
                         ? "إدراج مثلث قائم الزاوية"
                         : "Insert Set Square"}
                     </button>
+                    <button
+                      onClick={() => {
+                        const id = `tool-${Date.now()}`;
+                        setGeoTools([
+                          ...geoTools,
+                          {
+                            id,
+                            type: "calculator",
+                            x: 450 + Math.random() * 100,
+                            y: 250 + Math.random() * 100,
+                            rotation: 0,
+                          },
+                        ]);
+                        setShowMagicPopover(false);
+                      }}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 rounded-xl transition-colors flex items-center gap-2"
+                    >
+                      🧮{" "}
+                      {language === "ar"
+                        ? "إدراج آلة حاسبة كاسيو"
+                        : "Insert Casio Calculator"}
+                    </button>
                   </div>
                 </div>
               )}
 
               {/* Popover panel for App Layout Grids */}
               {showAppsPopover && (
-                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[70px] top-auto md:top-[320px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-56 z-40 animate-in zoom-in-95 duration-150">
-                  <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
-                    <h4 className="text-xs font-bold text-slate-800">
-                      {language === "ar"
-                        ? "تنسيق شبكة السبورة"
-                        : "Whiteboard Grid Layout"}
+                <div 
+                  style={{
+                    transform: `translate(${panelOffsets["apps"]?.x || 0}px, ${panelOffsets["apps"]?.y || 0}px)`,
+                  }}
+                  className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-4 md:left-[70px] top-auto md:top-[320px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-56 z-40 animate-in zoom-in-95 duration-150"
+                >
+                  <div 
+                    onMouseDown={(e) => handlePanelDragStart("apps", e)}
+                    onTouchStart={(e) => handlePanelDragStart("apps", e)}
+                    className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100 cursor-grab active:cursor-grabbing select-none"
+                    title={language === "ar" ? "اسحب لتحريك الدرج ✥" : "Drag to move panel ✥"}
+                  >
+                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                      <span className="text-indigo-600">✥</span>
+                      <span>
+                        {language === "ar"
+                          ? "تنسيق شبكة السبورة"
+                          : "Whiteboard Grid Layout"}
+                      </span>
                     </h4>
                     <button
                       onClick={() => setShowAppsPopover(false)}
-                      className="text-slate-400 hover:text-slate-600 font-bold text-sm"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      className="text-slate-400 hover:text-slate-600 font-bold text-lg px-1.5 hover:bg-slate-50 rounded"
                     >
                       ×
                     </button>
@@ -6406,6 +6967,57 @@ export default function App() {
                 <EyeOff size={14} className="sm:w-[18px] sm:h-[18px]" />
               </button>
             </div>
+
+            {/* AI Pen Status & Control Floating Panel */}
+            <AnimatePresence>
+              {(activeTool === "ai-pen" || elements.some((el) => el.type === "ai-pen")) && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20, x: "-50%" }}
+                  animate={{ opacity: 1, y: 0, x: "-50%" }}
+                  exit={{ opacity: 0, y: 20, x: "-50%" }}
+                  className="absolute bottom-20 left-1/2 z-40 bg-slate-950/90 backdrop-blur-xl border border-purple-500/30 shadow-[0_20px_50px_rgba(147,51,234,0.3)] rounded-2xl px-4 py-3 flex items-center gap-3.5 max-w-[90vw] sm:max-w-md overflow-hidden"
+                >
+                  {/* Glowing Laser scanning effect bar */}
+                  {isAiConverting && (
+                    <div className="absolute bottom-0 left-0 h-[2px] bg-gradient-to-r from-transparent via-purple-400 to-transparent w-full animate-scan" />
+                  )}
+                  
+                  <div className="relative shrink-0 flex items-center justify-center">
+                    <div className={`w-3.5 h-3.5 rounded-full ${isAiConverting ? "bg-purple-400 animate-pulse ring-4 ring-purple-500/30" : "bg-emerald-400 ring-4 ring-emerald-500/20"} transition-all`} />
+                  </div>
+                  
+                  <div className="flex flex-col min-w-0 text-left">
+                    <span className="text-xs font-black tracking-wide text-purple-200 uppercase flex items-center gap-1.5 justify-start">
+                      <Sparkles size={11} className="text-amber-400" />
+                      <span>{language === "ar" ? "قلم الذكاء الاصطناعي السحري" : "Magic AI Pen"}</span>
+                    </span>
+                    <span className="text-[10px] text-slate-300 font-medium truncate leading-none mt-1">
+                      {isAiConverting
+                        ? (language === "ar" ? "جاري التعرف على خط يدك بدقة فائقة..." : "Analyzing and transforming your handwriting...")
+                        : (language === "ar" ? "اكتب على السبورة وسيتحول خطك إلى نص مرتب" : "Write naturally, and AI will polish your text")}
+                    </span>
+                  </div>
+                  
+                  {/* Manual Trigger Button */}
+                  {elements.some((el) => el.type === "ai-pen") && !isAiConverting && (
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => {
+                        if (aiRecognitionTimeoutRef.current) {
+                          clearTimeout(aiRecognitionTimeoutRef.current);
+                        }
+                        processAiPenDrawing();
+                      }}
+                      className="ml-2 bg-gradient-to-r from-purple-500 via-indigo-500 to-sky-500 text-white px-3 py-1 rounded-xl text-[10px] font-black tracking-wide shadow-md shadow-purple-500/25 hover:shadow-lg hover:shadow-purple-500/40 transition-all cursor-pointer flex items-center gap-1 shrink-0 border border-purple-400/30"
+                    >
+                      <Sparkles size={10} />
+                      <span>{language === "ar" ? "حـوّل الآن" : "Convert Now"}</span>
+                    </motion.button>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </main>
         </div>
       )}
