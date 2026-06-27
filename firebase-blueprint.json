@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "Board": {
+      "title": "Board",
+      "description": "A whiteboard session belonging to a user",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "User ID of the board owner"
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the board"
+        },
+        "data": {
+          "type": "string",
+          "description": "Serialized JSON string of the board's pages and elements"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "title", "data", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "boards/{boardId}": {
+      "schema": {
+        "$ref": "#/entities/Board"
+      },
+      "description": "Stores user whiteboards"
+    }
+  }
+}

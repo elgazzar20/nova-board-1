@@ -1,0 +1,57 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidBoard(data) {
+      return data.keys().hasAll(['ownerId', 'title', 'data', 'createdAt', 'updatedAt'])
+        && data.keys().size() == 5
+        && data.ownerId is string && data.ownerId.size() <= 128
+        && data.ownerId == request.auth.uid
+        && data.title is string && data.title.size() <= 200
+        && data.data is string && data.data.size() <= 800000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /boards/{boardId} {
+      allow get: if isSignedIn() && existing().ownerId == request.auth.uid && isValidId(boardId);
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      
+      allow create: if isSignedIn() 
+        && isValidId(boardId)
+        && isValidBoard(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+        
+      allow update: if isSignedIn()
+        && isValidId(boardId)
+        && isValidBoard(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'data', 'updatedAt']);
+        
+      allow delete: if isSignedIn() && isValidId(boardId) && existing().ownerId == request.auth.uid;
+    }
+  }
+}
