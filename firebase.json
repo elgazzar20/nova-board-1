@@ -1,6 +1,0 @@
-{
-  "firestore": {
-    "rules": "firestore.rules",
-    "database": "ai-studio-remixremixnovabo-a9bab724-8fbc-4e41-be3e-c31451d06e58"
-  }
-}
