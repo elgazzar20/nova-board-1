@@ -27,6 +27,30 @@
         }
       },
       "required": ["ownerId", "title", "data", "createdAt", "updatedAt"]
+    },
+    "Feedback": {
+      "title": "Feedback",
+      "description": "Feedback or contact message submitted by visitors",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the sender"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Subject of the message"
+        },
+        "message": {
+          "type": "string",
+          "description": "Content of the message"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["name", "subject", "message", "createdAt"]
     }
   },
   "firestore": {
@@ -35,6 +59,12 @@
         "$ref": "#/entities/Board"
       },
       "description": "Stores user whiteboards"
+    },
+    "feedback/{feedbackId}": {
+      "schema": {
+        "$ref": "#/entities/Feedback"
+      },
+      "description": "Stores user feedback and contact submissions"
     }
   }
 }

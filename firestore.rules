@@ -7,11 +7,7 @@ service cloud.firestore {
     }
 
     function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return request.auth != null && request.auth.token.email_verified == true;
     }
 
     function incoming() {
@@ -22,36 +18,71 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isValidBoard(data) {
-      return data.keys().hasAll(['ownerId', 'title', 'data', 'createdAt', 'updatedAt'])
-        && data.keys().size() == 5
-        && data.ownerId is string && data.ownerId.size() <= 128
-        && data.ownerId == request.auth.uid
-        && data.title is string && data.title.size() <= 200
-        && data.data is string && data.data.size() <= 800000
-        && data.createdAt is timestamp
-        && data.updatedAt is timestamp;
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidBoard(data, isCreate) {
+      let hasKeys = isCreate 
+        ? data.keys().hasAll(['ownerId', 'title', 'data', 'createdAt', 'updatedAt']) && data.keys().size() == 5 
+        : true;
+      
+      let typesCorrect = 
+        data.ownerId is string && data.ownerId.size() <= 128 &&
+        data.title is string && data.title.size() <= 200 &&
+        data.data is string && data.data.size() <= 1048000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+      
+      let isOwnerMatch = data.ownerId == request.auth.uid;
+
+      return hasKeys && typesCorrect && isOwnerMatch;
+    }
+
+    function isValidFeedback(data) {
+      let hasKeys = data.keys().hasAll(['name', 'subject', 'message', 'createdAt']) && data.keys().size() == 4;
+      let typesCorrect = 
+        data.name is string && data.name.size() <= 100 &&
+        data.subject is string && data.subject.size() <= 200 &&
+        data.message is string && data.message.size() <= 5000 &&
+        data.createdAt is timestamp;
+      return hasKeys && typesCorrect;
     }
 
     match /boards/{boardId} {
-      allow get: if isSignedIn() && existing().ownerId == request.auth.uid && isValidId(boardId);
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() 
+        && isValidId(boardId) 
+        && existing().ownerId == request.auth.uid;
       
+      allow list: if isSignedIn() 
+        && existing().ownerId == request.auth.uid;
+        
       allow create: if isSignedIn() 
         && isValidId(boardId)
-        && isValidBoard(incoming())
+        && isValidBoard(incoming(), true)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
         
-      allow update: if isSignedIn()
+      allow update: if (
+        isSignedIn()
         && isValidId(boardId)
-        && isValidBoard(incoming())
-        && incoming().ownerId == existing().ownerId
-        && incoming().createdAt == existing().createdAt
+        && isValidBoard(incoming(), false)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'data', 'updatedAt'])
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'data', 'updatedAt']);
+        && incoming().createdAt == existing().createdAt
+        && incoming().ownerId == existing().ownerId
+      );
         
-      allow delete: if isSignedIn() && isValidId(boardId) && existing().ownerId == request.auth.uid;
+      allow delete: if isSignedIn() 
+        && isValidId(boardId) 
+        && existing().ownerId == request.auth.uid;
+    }
+
+    match /feedback/{feedbackId} {
+      allow create: if isValidId(feedbackId)
+        && isValidFeedback(incoming())
+        && incoming().createdAt == request.time;
+      allow read, update, delete: if false;
     }
   }
 }
