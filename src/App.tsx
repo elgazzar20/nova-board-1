@@ -5,8 +5,11 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { jsPDF } from "jspdf";
-import { auth, db } from "./firebase";
+import { auth, db, handleFirestoreError, OperationType } from "./firebase";
 import { motion, AnimatePresence } from "motion/react";
+import { PrivacyPolicy } from "./components/PrivacyPolicy";
+import { ContactUs } from "./components/ContactUs";
+import { NovaBoardLogo } from "./components/NovaBoardLogo";
 import {
   onAuthStateChanged,
   signInWithPopup,
@@ -79,6 +82,8 @@ import {
   Search,
   Calendar,
   UserCheck,
+  Home,
+  ArrowLeft,
 } from "lucide-react";
 
 interface Point {
@@ -128,7 +133,7 @@ interface BoardPage {
 }
 
 export default function App() {
-  const [view, setView] = useState<"landing" | "whiteboard">("landing");
+  const [view, setView] = useState<"landing" | "whiteboard" | "privacy" | "contact">("landing");
   const [activeSubject, setActiveSubject] = useState<
     "math" | "physics" | "chemistry" | "english" | "arts"
   >("math");
@@ -223,6 +228,7 @@ export default function App() {
   const [userBoards, setUserBoards] = useState<any[]>([]);
   const [boardSearch, setBoardSearch] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Interactive landing page states
   const [mockupTab, setMockupTab] = useState<"draw" | "geo" | "notes" | "export">("draw");
@@ -234,6 +240,7 @@ export default function App() {
   ]);
   const [rulerRotation, setRulerRotation] = useState<number>(15);
   const [protractorRotation, setProtractorRotation] = useState<number>(-25);
+  const [showFirebaseGuide, setShowFirebaseGuide] = useState<boolean>(false);
 
   const loadUserBoardsList = async (uid: string) => {
     try {
@@ -251,7 +258,7 @@ export default function App() {
       });
       setUserBoards(boards);
     } catch (err) {
-      console.error(err);
+      handleFirestoreError(err, OperationType.LIST, "boards");
     }
   };
 
@@ -266,7 +273,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, "boards", boardId));
     } catch (err) {
-      console.error("Delete board error:", err);
+      handleFirestoreError(err, OperationType.DELETE, `boards/${boardId}`);
     }
   };
 
@@ -315,7 +322,7 @@ export default function App() {
           });
           setUserBoards(boards);
         }, (err) => {
-          console.error("Boards listener error:", err);
+          handleFirestoreError(err, OperationType.GET, "boards");
         });
       } else {
         if (unsubscribeBoards) {
@@ -335,11 +342,19 @@ export default function App() {
   }, []);
 
   const handleLogin = async () => {
+    if (isLoggingIn) return;
+    setIsLoggingIn(true);
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error(error);
+    } catch (error: any) {
+      if (error && (error.code === "auth/popup-closed-by-user" || error.code === "auth/cancelled-popup-request")) {
+        console.log("Sign-in popup was closed or cancelled by the user.");
+      } else {
+        console.error("Sign-in error:", error);
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -377,7 +392,7 @@ export default function App() {
           setCurrentDbBoardId(newDocRef.id);
         }
       } catch (err) {
-        console.error("Save error: ", err);
+        handleFirestoreError(err, currentDbBoardId ? OperationType.UPDATE : OperationType.CREATE, `boards/${currentDbBoardId || 'new'}`);
       }
       setTimeout(() => setIsSaving(false), 800);
     };
@@ -535,7 +550,7 @@ export default function App() {
           tempCtx.lineCap = "round";
           tempCtx.lineJoin = "round";
 
-          if (el.type === "pen" && el.points && el.points.length > 0) {
+          if ((el.type === "pen" || el.type === "ai-pen") && el.points && el.points.length > 0) {
             tempCtx.moveTo(el.points[0].x, el.points[0].y);
             for (let pIdx = 1; pIdx < el.points.length; pIdx++) {
               tempCtx.lineTo(el.points[pIdx].x, el.points[pIdx].y);
@@ -1003,7 +1018,7 @@ export default function App() {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
-      if (el.type === "pen" && el.points && el.points.length > 0) {
+      if ((el.type === "pen" || el.type === "ai-pen") && el.points && el.points.length > 0) {
         ctx.moveTo(
           el.points[0].x * (zoom / 100),
           el.points[0].y * (zoom / 100),
@@ -1015,6 +1030,15 @@ export default function App() {
           );
         }
         ctx.stroke();
+
+        // If it's an AI Pen stroke, draw an elegant, magical neon-violet halo
+        if (el.type === "ai-pen") {
+          ctx.save();
+          ctx.strokeStyle = "rgba(168, 85, 247, 0.35)"; // soft violet glow
+          ctx.lineWidth = (el.width + 6) * (zoom / 100);
+          ctx.stroke();
+          ctx.restore();
+        }
       } else if (el.type === "eraser" && el.points && el.points.length > 0) {
         // Use destination-out to erase pixels and reveal the background grid
         ctx.globalCompositeOperation = "destination-out";
@@ -1513,6 +1537,30 @@ export default function App() {
     redrawCanvas();
   }, [elements, zoom, panOffset, selectedElementId, showMeasurements]);
 
+  // Prevent default scroll/pan behaviors on touch screens when inside the Whiteboard
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const preventTouchDefault = (e: TouchEvent) => {
+      // Prevent scrolling or zooming the actual viewport when drawing/touching the canvas
+      if (e.cancelable) {
+        e.preventDefault();
+      }
+    };
+
+    // Use passive: false to override modern browser passive touch event defaults
+    canvas.addEventListener("touchstart", preventTouchDefault, { passive: false });
+    canvas.addEventListener("touchmove", preventTouchDefault, { passive: false });
+    canvas.addEventListener("gesturestart", preventTouchDefault, { passive: false });
+
+    return () => {
+      canvas.removeEventListener("touchstart", preventTouchDefault);
+      canvas.removeEventListener("touchmove", preventTouchDefault);
+      canvas.removeEventListener("gesturestart", preventTouchDefault);
+    };
+  }, [view]);
+
   // Actions for board drawing
   const getMousePos = (
     e:
@@ -1620,7 +1668,7 @@ export default function App() {
     const pos = getMousePos(e);
     setIsDrawing(true);
 
-    if (activeTool === "pen" || activeTool === "eraser") {
+    if (activeTool === "pen" || activeTool === "ai-pen" || activeTool === "eraser") {
       const newElement: DrawElement = {
         id: `el-${Date.now()}`,
         type: activeTool,
@@ -1628,6 +1676,8 @@ export default function App() {
         color:
           activeTool === "eraser"
             ? `rgba(0, 0, 0, ${eraserOpacity / 100})`
+            : activeTool === "ai-pen"
+            ? "#7c3aed"
             : brushColor,
         width: activeTool === "eraser" ? eraserSize : brushWidth,
       };
@@ -1736,7 +1786,7 @@ export default function App() {
     const activeIndex = updatedElements.length - 1;
     const current = updatedElements[activeIndex];
 
-    if ((activeTool === "pen" || activeTool === "eraser") && current.points) {
+    if ((activeTool === "pen" || activeTool === "ai-pen" || activeTool === "eraser") && current.points) {
       current.points = [...current.points, pos];
       setElements(updatedElements);
     } else if (
@@ -1750,10 +1800,134 @@ export default function App() {
     }
   };
 
+  const processAiPenDrawing = async () => {
+    const aiPenElements = elements.filter((el) => el.type === "ai-pen");
+    if (aiPenElements.length === 0) return;
+
+    // Calculate bounding box of all points in ai-pen elements
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    aiPenElements.forEach((el) => {
+      if (el.points) {
+        el.points.forEach((p) => {
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+        });
+      }
+    });
+
+    if (minX === Infinity || maxX === -Infinity || minY === Infinity || maxY === -Infinity) {
+      return;
+    }
+
+    setIsAiConverting(true);
+    setAiPenStatusText(
+      language === "ar"
+        ? "جاري التعرف على الكتابة بالذكاء الاصطناعي..."
+        : "AI is recognizing handwriting..."
+    );
+
+    try {
+      // Create offscreen canvas for rendering the handwriting
+      const canvas = document.createElement("canvas");
+      const padding = 24;
+      const width = (maxX - minX) + padding * 2;
+      const height = (maxY - minY) + padding * 2;
+      
+      canvas.width = width;
+      canvas.height = height;
+      
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        // Clear canvas with a white background for premium contrast and perfect OCR accuracy
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+
+        // Style the stroke drawing: clean, high-contrast black line
+        ctx.strokeStyle = "#000000";
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        aiPenElements.forEach((el) => {
+          if (el.points && el.points.length > 0) {
+            ctx.beginPath();
+            ctx.moveTo(el.points[0].x - minX + padding, el.points[0].y - minY + padding);
+            for (let i = 1; i < el.points.length; i++) {
+              ctx.lineTo(el.points[i].x - minX + padding, el.points[i].y - minY + padding);
+            }
+            ctx.stroke();
+          }
+        });
+      }
+
+      const base64Image = canvas.toDataURL("image/png");
+
+      const response = await fetch("/api/ai-pen/recognize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ image: base64Image }),
+      });
+
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      if (data.text && data.text.trim().length > 0) {
+        // Create an elegant new Text element positioned perfectly
+        const textId = `el-${Date.now()}`;
+        const newTextElement: DrawElement = {
+          id: textId,
+          type: "text",
+          x1: minX,
+          y1: minY + 15,
+          x2: maxX,
+          y2: minY + 65, // estimated height
+          color: brushColor,
+          width: Math.max(4, Math.min(10, brushWidth)), // Scale size nicely
+          text: data.text.trim(),
+        };
+
+        // Filter out the raw 'ai-pen' stroke elements and append the new styled text element
+        const remainingElements = elements.filter((el) => el.type !== "ai-pen");
+        const updatedElements = [...remainingElements, newTextElement];
+        
+        setElements(updatedElements);
+        updateHistory(updatedElements);
+      } else {
+        // If not recognized clearly, keep the raw strokes so user doesn't lose their input
+        console.log("No text recognized.");
+      }
+    } catch (err) {
+      console.error("AI Pen recognition failed:", err);
+    } finally {
+      setIsAiConverting(false);
+      setAiPenStatusText("");
+    }
+  };
+
   const handleMouseUp = () => {
     setIsDrawing(false);
     setIsPanning(false);
     setStartPan(null);
+
+    // AI Pen auto-convert trigger
+    if (activeTool === "ai-pen") {
+      if (aiRecognitionTimeoutRef.current) {
+        clearTimeout(aiRecognitionTimeoutRef.current);
+      }
+      aiRecognitionTimeoutRef.current = setTimeout(() => {
+        processAiPenDrawing();
+      }, 1500);
+    }
 
     // Save state after dragging in Selection mode
     if (activeTool === "select" && draggedElement) {
@@ -2123,13 +2297,27 @@ export default function App() {
     <!-- Navbar -->
     <nav class="w-full py-4 px-6 md:px-12 border-b border-slate-200/60 bg-white/70 backdrop-blur-md sticky top-0 z-50 flex items-center justify-between">
       <div class="flex items-center gap-3">
-        <div class="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m3 21 1.9-1.9a1 1 0 0 0 0-1.4l-1.4-1.4a1 1 0 0 0-1.4 0L.3 18.2"/>
-            <path d="m5 19 14-14"/>
-            <path d="m15 5 1.4-1.4a1 1 0 0 1 1.4 0l1.4 1.4a1 1 0 0 1 0 1.4L17.8 7.8"/>
-            <path d="m19 13 2 2"/>
-            <path d="m13 19 2 2"/>
+        <div class="w-10 h-10 flex items-center justify-center">
+          <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="logoNGradientBlogger" x1="20" y1="20" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#2563EB" />
+                <stop offset="50%" stop-color="#3B82F6" />
+                <stop offset="100%" stop-color="#8B5CF6" />
+              </linearGradient>
+            </defs>
+            <rect x="14" y="14" width="72" height="72" rx="12" stroke="#0c1524" stroke-width="3.5" fill="white" />
+            <rect x="7" y="19" width="4.5" height="4.5" fill="#3B82F6" rx="1" />
+            <rect x="2" y="25" width="5" height="5" fill="#00D2FF" rx="1" />
+            <rect x="8" y="29" width="6" height="6" fill="#8B5CF6" rx="1.5" />
+            <rect x="4" y="11" width="3" height="3" fill="#00D2FF" rx="0.5" />
+            <path d="M76 27 L79 24 L80 25 L77 28 Z" stroke="#0F172A" stroke-width="1" />
+            <path d="M76 38 L80 41 L78 42 L79 44.5 L78 45 L77 43 L76 45 Z" stroke="#0F172A" stroke-width="1" stroke-linejoin="round" />
+            <rect x="75.5" y="49" width="5" height="5" rx="1.2" stroke="#0F172A" stroke-width="1" />
+            <circle cx="78" cy="62" r="1.2" fill="#8B5CF6" />
+            <circle cx="78" cy="67" r="1.2" fill="#8B5CF6" />
+            <circle cx="78" cy="72" r="1.2" fill="#8B5CF6" />
+            <path d="M26,68 L26,34 C26,26 30,22 35,22 C40,22 45,28 48,34 L60,58 C62,62 65,64 68,64 C71,64 73,60 73,54 L73,22 L80,22 L80,54 C80,64 74,70 68,70 C62,70 57,64 54,58 L42,34 C40,30 38,28 36,28 C34,28 33,30 33,32 L33,68 Z" fill="url(#logoNGradientBlogger)" />
           </svg>
         </div>
         <span class="font-extrabold text-xl tracking-tight text-slate-800">${language === "ar" ? "نوفا بورد" : "NovaBoard"}</span>
@@ -2343,13 +2531,27 @@ export default function App() {
     <header class="relative z-20 px-6 py-3 flex items-center justify-between border-b border-slate-200 bg-white/70 backdrop-blur-md">
       <div class="flex items-center gap-4">
         <div class="flex items-center gap-2">
-          <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-200">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="m3 21 1.9-1.9a1 1 0 0 0 0-1.4l-1.4-1.4a1 1 0 0 0-1.4 0L.3 18.2"/>
-              <path d="m5 19 14-14"/>
-              <path d="m15 5 1.4-1.4a1 1 0 0 1 1.4 0l1.4 1.4a1 1 0 0 1 0 1.4L17.8 7.8"/>
-              <path d="m19 13 2 2"/>
-              <path d="m13 19 2 2"/>
+          <div class="w-8 h-8 flex items-center justify-center">
+            <svg width="28" height="28" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="logoNGradientBloggerWhiteboard" x1="20" y1="20" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#2563EB" />
+                  <stop offset="50%" stop-color="#3B82F6" />
+                  <stop offset="100%" stop-color="#8B5CF6" />
+                </linearGradient>
+              </defs>
+              <rect x="14" y="14" width="72" height="72" rx="12" stroke="#0c1524" stroke-width="3.5" fill="white" />
+              <rect x="7" y="19" width="4.5" height="4.5" fill="#3B82F6" rx="1" />
+              <rect x="2" y="25" width="5" height="5" fill="#00D2FF" rx="1" />
+              <rect x="8" y="29" width="6" height="6" fill="#8B5CF6" rx="1.5" />
+              <rect x="4" y="11" width="3" height="3" fill="#00D2FF" rx="0.5" />
+              <path d="M76 27 L79 24 L80 25 L77 28 Z" stroke="#0F172A" stroke-width="1" />
+              <path d="M76 38 L80 41 L78 42 L79 44.5 L78 45 L77 43 L76 45 Z" stroke="#0F172A" stroke-width="1" stroke-linejoin="round" />
+              <rect x="75.5" y="49" width="5" height="5" rx="1.2" stroke="#0F172A" stroke-width="1" />
+              <circle cx="78" cy="62" r="1.2" fill="#8B5CF6" />
+              <circle cx="78" cy="67" r="1.2" fill="#8B5CF6" />
+              <circle cx="78" cy="72" r="1.2" fill="#8B5CF6" />
+              <path d="M26,68 L26,34 C26,26 30,22 35,22 C40,22 45,28 48,34 L60,58 C62,62 65,64 68,64 C71,64 73,60 73,54 L73,22 L80,22 L80,54 C80,64 74,70 68,70 C62,70 57,64 54,58 L42,34 C40,30 38,28 36,28 C34,28 33,30 33,32 L33,68 Z" fill="url(#logoNGradientBloggerWhiteboard)" />
             </svg>
           </div>
           <span class="font-bold text-lg tracking-tight text-slate-800">${language === "ar" ? "نوفا بورد" : "NovaBoard"}</span>
@@ -2624,51 +2826,44 @@ export default function App() {
 
   return (
     <>
-      {view === "landing" ? (
+      {view === "contact" ? (
+        <ContactUs language={language} onBack={() => setView("landing")} />
+      ) : view === "privacy" ? (
+        <PrivacyPolicy language={language} onBack={() => setView("landing")} />
+      ) : view === "landing" ? (
         <div
           className="w-full min-h-screen bg-slate-50/70 text-slate-900 font-sans flex flex-col relative overflow-x-hidden antialiased scroll-smooth selection:bg-indigo-100 selection:text-indigo-900"
           dir={language === "ar" ? "rtl" : "ltr"}
         >
           {/* Futuristic Glowing Grid Orbs Background */}
           <div className="absolute inset-0 bg-[linear-gradient(to_right,#e2e8f0_1px,transparent_1px),linear-gradient(to_bottom,#e2e8f0_1px,transparent_1px)] bg-[size:30px_30px] opacity-25 pointer-events-none" />
-          <div className="absolute w-[600px] h-[600px] rounded-full bg-gradient-to-tr from-indigo-300/20 to-purple-300/20 blur-[130px] -top-96 left-1/2 -translate-x-1/2 pointer-events-none" />
+          <div className="absolute w-[600px] h-[600px] rounded-full bg-gradient-to-tr from-indigo-300/20 to-purple-300/20 blur-[130px] -top-96 left-1/2 -translate-x-1/2 pointer-events-none animate-pulse duration-[8000ms]" />
           <div className="absolute w-[400px] h-[400px] rounded-full bg-gradient-to-br from-violet-200/20 to-fuchsia-200/20 blur-[100px] top-[40%] left-[10%] pointer-events-none" />
           <div className="absolute w-[400px] h-[400px] rounded-full bg-gradient-to-bl from-pink-200/15 to-rose-200/15 blur-[100px] top-[60%] right-[10%] pointer-events-none" />
 
+          {/* Floating Aesthetic Math Symbols */}
+          <div className="absolute top-32 left-8 md:left-24 text-indigo-400/20 font-mono text-xs md:text-sm pointer-events-none select-none animate-bounce duration-[6000ms]">
+            sin(θ) = y/r
+          </div>
+          <div className="absolute top-48 right-12 md:right-32 text-purple-400/20 font-mono text-xs md:text-sm pointer-events-none select-none animate-bounce duration-[8000ms]">
+            a² + b² = c²
+          </div>
+          <div className="absolute bottom-1/4 left-1/3 text-pink-400/15 font-mono text-sm md:text-base pointer-events-none select-none animate-pulse duration-[5000ms]">
+            ∫ e^x dx
+          </div>
+          <div className="absolute top-2/3 left-10 text-emerald-400/15 font-mono text-sm pointer-events-none select-none animate-pulse duration-[7000ms]">
+            E = mc²
+          </div>
+
           {/* Luxury Navigation Header */}
           <header className="w-full py-4 px-6 md:px-12 border-b border-slate-200/60 bg-white/70 backdrop-blur-xl sticky top-0 z-50 flex items-center justify-between transition-all">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView("landing")}>
               <motion.div
-                whileHover={{ scale: 1.08, rotate: 6 }}
-                whileTap={{ scale: 0.95 }}
-                className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-md shadow-indigo-200 cursor-pointer"
-                onClick={createNewBoard}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.98 }}
               >
-                <svg
-                  width="22"
-                  height="22"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="white"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="m3 21 1.9-1.9a1 1 0 0 0 0-1.4l-1.4-1.4a1 1 0 0 0-1.4 0L.3 18.2" />
-                  <path d="m5 19 14-14" />
-                  <path d="m15 5 1.4-1.4a1 1 0 0 1 1.4 0l1.4 1.4a1 1 0 0 1 0 1.4L17.8 7.8" />
-                  <path d="m19 13 2 2" />
-                  <path d="m13 19 2 2" />
-                </svg>
+                <NovaBoardLogo size={36} showText={true} showTagline={false} language={language} />
               </motion.div>
-              <div className="flex flex-col text-start">
-                <span className="font-extrabold text-xl tracking-tight text-slate-950">
-                  Nova<span className="text-indigo-600">Board</span>
-                </span>
-                <span className="text-[10px] font-bold text-indigo-500/80 -mt-0.5 tracking-wider uppercase">
-                  {language === "ar" ? "السبورة التفاعلية الفاخرة" : "Premium Interactive Suite"}
-                </span>
-              </div>
             </div>
 
             <div className="flex items-center gap-4">
@@ -2680,6 +2875,8 @@ export default function App() {
                 <Globe size={13} className="text-slate-500" />
                 {language === "ar" ? "English" : "عربي"}
               </button>
+
+
 
               {user ? (
                 <div className="flex items-center gap-3">
@@ -2707,13 +2904,24 @@ export default function App() {
                 </div>
               ) : (
                 <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
+                  whileHover={isLoggingIn ? {} : { scale: 1.02 }}
+                  whileTap={isLoggingIn ? {} : { scale: 0.98 }}
                   onClick={handleLogin}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-100 transition-all flex items-center gap-1.5 cursor-pointer border border-indigo-500/30"
+                  disabled={isLoggingIn}
+                  className={`px-4 py-2 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center gap-1.5 border border-indigo-500/30 ${
+                    isLoggingIn
+                      ? "bg-indigo-400 cursor-not-allowed shadow-none"
+                      : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-100 cursor-pointer"
+                  }`}
                 >
-                  <Globe size={14} />
-                  {language === "ar" ? "بوابة المعلم" : "Teacher Login"}
+                  {isLoggingIn ? (
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  ) : (
+                    <Globe size={14} />
+                  )}
+                  {isLoggingIn
+                    ? (language === "ar" ? "جاري الدخول..." : "Signing in...")
+                    : (language === "ar" ? "بوابة المعلم" : "Teacher Login")}
                 </motion.button>
               )}
             </div>
@@ -2737,12 +2945,12 @@ export default function App() {
                   </span>
                 </div>
 
-                <h1 className="text-4xl md:text-6xl font-black text-slate-950 tracking-tight leading-[1.15]">
+                <h1 className="text-5xl md:text-6xl lg:text-7xl font-black text-slate-950 tracking-tight leading-[1.15]">
                   {language === "ar" ? (
                     <>
-                      سبورة المستقبل التفاعلية <br />
+                      مستقبل التعليم <br />
                       <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-500">
-                        للمعلمين المحترفين
+                        التفاعلي الذكي
                       </span>
                     </>
                   ) : (
@@ -2755,33 +2963,61 @@ export default function App() {
                   )}
                 </h1>
 
-                <p className="text-slate-600 text-base md:text-lg font-medium leading-relaxed max-w-xl">
+                <p className="text-slate-600 text-base md:text-xl font-medium leading-relaxed max-w-xl">
                   {language === "ar"
-                    ? "ارتقِ بشروحاتك إلى آفاق غير مسبوقة. واجهة سحابية متكاملة، أدوات رسم دقيقة، ومساطر ومنقلات هندسية تفاعلية مصممة بدقة متناهية لتعمل بسلاسة داخل مدونات Blogger دون إبطاء."
-                    : "Deliver legendary lessons. A stunning interactive workspace with precise vector tools, fully interactive math objects, and ultra-lightweight architecture built to run seamlessly on your blogs."}
+                    ? "ارتقِ بشروحاتك إلى آفاق غير مسبوقة. واجهة سحابية متكاملة، أدوات رسم دقيقة، ومساطر ومنقلات هندسية تفاعلية مصممة بدقة متناهية لتعمل بسلاسة فائقة."
+                    : "Deliver legendary lessons. A stunning interactive workspace with precise vector tools, fully interactive math objects, and ultra-lightweight architecture."}
                 </p>
 
                 {/* Instant Action CTA Panel */}
                 <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto mt-2">
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={createNewBoard}
-                    className="px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-base font-bold shadow-xl shadow-indigo-200 hover:shadow-indigo-300/40 transition-all flex items-center justify-center gap-3 w-full sm:w-auto cursor-pointer border border-indigo-500/50"
-                  >
-                    <Plus size={20} className="animate-pulse" />
-                    {language === "ar" ? "ابدأ تشغيل السبورة الآن" : "Launch Whiteboard"}
-                  </motion.button>
-
-                  {!user && (
+                  {user ? (
+                    <>
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={createNewBoard}
+                        className="px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-base font-bold shadow-xl shadow-indigo-200 hover:shadow-indigo-300/40 transition-all flex items-center justify-center gap-3 w-full sm:w-auto cursor-pointer border border-indigo-500/50"
+                      >
+                        <Plus size={20} className="animate-pulse" />
+                        {language === "ar" ? "ابدأ تشغيل السبورة الآن" : "Launch Whiteboard"}
+                      </motion.button>
+                      
+                      <motion.button
+                        whileHover={{ scale: 1.03 }}
+                        whileTap={{ scale: 0.97 }}
+                        onClick={() => {
+                          const boardroomEl = document.getElementById("boardroom-cabinet");
+                          if (boardroomEl) {
+                            boardroomEl.scrollIntoView({ behavior: "smooth" });
+                          }
+                        }}
+                        className="px-6 py-4 bg-white hover:bg-slate-50 text-slate-700 rounded-2xl text-base font-bold shadow-md hover:shadow-lg border border-slate-200 transition-all flex items-center justify-center gap-2 w-full sm:w-auto cursor-pointer"
+                      >
+                        <LayoutGrid size={18} className="text-indigo-600" />
+                        {language === "ar" ? "تصفح أعمالك المحفوظة" : "Browse Saved Boards"}
+                      </motion.button>
+                    </>
+                  ) : (
                     <motion.button
-                      whileHover={{ scale: 1.03 }}
-                      whileTap={{ scale: 0.97 }}
-                      onClick={createNewBoard} // Guests can open whiteboard too!
-                      className="px-6 py-4 bg-white hover:bg-slate-50 text-slate-700 rounded-2xl text-base font-bold shadow-md hover:shadow-lg border border-slate-200 transition-all flex items-center justify-center gap-2 w-full sm:w-auto cursor-pointer"
+                      whileHover={isLoggingIn ? {} : { scale: 1.05 }}
+                      whileTap={isLoggingIn ? {} : { scale: 0.95 }}
+                      onClick={handleLogin}
+                      disabled={isLoggingIn}
+                      className={`px-8 py-4 text-white rounded-2xl text-base font-bold shadow-xl transition-all flex items-center justify-center gap-3 w-full sm:w-auto border border-indigo-500/50 ${
+                        isLoggingIn
+                          ? "bg-indigo-400 cursor-not-allowed shadow-none"
+                          : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200 hover:shadow-indigo-300/40 cursor-pointer"
+                      }`}
                     >
-                      <UserCheck size={18} className="text-indigo-600" />
-                      {language === "ar" ? "الدخول كمعلم زائر (سريع)" : "Try as Guest Teacher"}
+                      {isLoggingIn ? (
+                        <div className="w-5 h-5 border-3 border-white border-t-transparent rounded-full animate-spin"></div>
+                      ) : (
+                        <Globe size={20} className="animate-pulse" />
+                      )}
+                      {isLoggingIn
+                        ? (language === "ar" ? "جاري تسجيل الدخول..." : "Signing in...")
+                        : (language === "ar" ? "تسجيل الدخول الفوري للبدء (مطلوب)" : "Sign in to Start (Required)")}
                     </motion.button>
                   )}
                 </div>
@@ -2789,14 +3025,43 @@ export default function App() {
                 {!user && (
                   <button
                     onClick={handleLogin}
-                    className="text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors flex items-center gap-1.5 mt-1 cursor-pointer"
+                    disabled={isLoggingIn}
+                    className={`text-xs font-bold transition-colors flex items-center gap-1.5 mt-1 ${isLoggingIn ? "text-indigo-400 cursor-not-allowed" : "text-slate-500 hover:text-indigo-600 cursor-pointer"}`}
                   >
-                    <Info size={13} />
-                    {language === "ar"
-                      ? "هل تريد ميزة الحفظ السحابي التلقائي؟ سجل دخولك بضغطة زر مجاناً"
-                      : "Want auto cloud saving? Click to log in free with Google"}
+                    {isLoggingIn ? (
+                      <div className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+                    ) : (
+                      <Info size={13} />
+                    )}
+                    {isLoggingIn
+                      ? (language === "ar" ? "جاري تسجيل الدخول..." : "Signing in...")
+                      : (language === "ar"
+                          ? "تسجيل الدخول السريع بضغطة زر مجاناً ببريدك التعليمي أو الشخصي"
+                          : "Fast secure login with your Google educational or personal email")}
                   </button>
                 )}
+
+                {/* Micro Statistics / Highlights Row */}
+                <div className="grid grid-cols-3 gap-4 w-full mt-8 pt-6 border-t border-slate-200/60">
+                  <div className="flex flex-col items-start text-start">
+                    <span className="text-2xl md:text-3xl font-black text-indigo-600">15+</span>
+                    <span className="text-[10px] md:text-xs font-bold text-slate-500 mt-1 leading-tight">
+                      {language === "ar" ? "أداة هندسية متطورة" : "Advanced Geo Tools"}
+                    </span>
+                  </div>
+                  <div className="flex flex-col items-start text-start border-l border-slate-200/60 rtl:border-l-0 rtl:border-r pl-4 rtl:pl-0 rtl:pr-4">
+                    <span className="text-2xl md:text-3xl font-black text-purple-600">100%</span>
+                    <span className="text-[10px] md:text-xs font-bold text-slate-500 mt-1 leading-tight">
+                      {language === "ar" ? "حفظ سحابي فوري" : "Instant Cloud Sync"}
+                    </span>
+                  </div>
+                  <div className="flex flex-col items-start text-start border-l border-slate-200/60 rtl:border-l-0 rtl:border-r pl-4 rtl:pl-0 rtl:pr-4">
+                    <span className="text-2xl md:text-3xl font-black text-pink-600">Free</span>
+                    <span className="text-[10px] md:text-xs font-bold text-slate-500 mt-1 leading-tight">
+                      {language === "ar" ? "تعليمي ومجاني بالكامل" : "100% Free for Schools"}
+                    </span>
+                  </div>
+                </div>
               </div>
 
               {/* Right Column (Futuristic Interactive Device Preview) */}
@@ -3090,10 +3355,11 @@ export default function App() {
             {/* Teacher's Workspace Cabin (بوابة المعلم لإدارة السبورات المحفوظة) */}
             {user && (
               <motion.div
+                id="boardroom-cabinet"
                 initial={{ opacity: 0, y: 30 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
-                className="w-full bg-white border border-slate-200/80 rounded-3xl p-6 md:p-8 shadow-[0_15px_40px_rgba(15,23,42,0.04)] relative overflow-hidden"
+                className="w-full bg-white border border-slate-200/80 rounded-3xl p-6 md:p-8 shadow-[0_15px_40px_rgba(15,23,42,0.04)] relative overflow-hidden scroll-mt-24"
               >
                 <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-bl from-indigo-50 to-transparent rounded-full pointer-events-none" />
                 
@@ -3286,54 +3552,149 @@ export default function App() {
                         
                         {subj.id === "math" && (
                           <div className="relative w-full h-full flex items-center justify-center">
-                            <div className="w-24 h-24 rounded-full border-4 border-dashed border-indigo-600/30 flex items-center justify-center">
-                              <div className="w-16 h-16 bg-indigo-50 border-2 border-indigo-600 rounded-lg rotate-12 flex items-center justify-center shadow-xs">
-                                <Ruler size={24} className="text-indigo-600" />
-                              </div>
-                            </div>
-                            <span className="absolute top-4 left-6 text-[10px] font-mono font-bold text-slate-400 bg-white/80 px-2 py-0.5 border rounded-full">r = 12cm</span>
+                            <svg width="180" height="130" viewBox="0 0 180 130" className="overflow-visible">
+                              <path d="M 10 110 L 170 110" stroke="#cbd5e1" strokeWidth="1" strokeDasharray="3 3" />
+                              <path d="M 40 10 L 40 110" stroke="#cbd5e1" strokeWidth="1" strokeDasharray="3 3" />
+                              <motion.path
+                                d="M 40 30 L 140 110 L 40 110 Z"
+                                fill="rgba(99, 102, 241, 0.08)"
+                                stroke="#4f46e5"
+                                strokeWidth="2.5"
+                                strokeLinejoin="round"
+                                initial={{ pathLength: 0 }}
+                                animate={{ pathLength: 1 }}
+                                transition={{ duration: 2 }}
+                              />
+                              <rect x="40" y="100" width="10" height="10" fill="none" stroke="#4f46e5" strokeWidth="1.5" />
+                              <text x="30" y="70" fontSize="10" fontWeight="bold" fill="#4f46e5" textAnchor="end">a</text>
+                              <text x="90" y="123" fontSize="10" fontWeight="bold" fill="#4f46e5" textAnchor="middle">b</text>
+                              <text x="100" y="65" fontSize="10" fontWeight="bold" fill="#818cf8">c (Hypotenuse)</text>
+                              <path d="M 120 110 A 20 20 0 0 1 125 98" fill="none" stroke="#6366f1" strokeWidth="1.5" />
+                              <text x="110" y="103" fontSize="8" fontWeight="bold" fill="#6366f1">θ</text>
+                            </svg>
                           </div>
                         )}
 
                         {subj.id === "physics" && (
                           <div className="relative w-full h-full flex items-center justify-center">
-                            <svg width="140" height="100" viewBox="0 0 140 100">
-                              <line x1="10" y1="50" x2="110" y2="50" stroke="#f43f5e" strokeWidth="3" />
-                              <polygon points="110,45 125,50 110,55" fill="#f43f5e" />
-                              <rect x="40" y="30" width="40" height="40" rx="4" fill="none" stroke="#0f172a" strokeWidth="2.5" />
-                              <text x="50" y="55" fontSize="11" fontWeight="bold" fill="#0f172a" fontFamily="monospace">F = ma</text>
+                            <svg width="180" height="130" viewBox="0 0 180 130" className="overflow-visible">
+                              <path d="M 20 110 L 160 110 L 160 30 Z" fill="rgba(244, 63, 94, 0.04)" stroke="#e2e8f0" strokeWidth="2" />
+                              <line x1="20" y1="110" x2="160" y2="30" stroke="#94a3b8" strokeWidth="2.5" />
+                              <path d="M 40 110 A 20 20 0 0 0 37 100" fill="none" stroke="#64748b" strokeWidth="1.5" />
+                              <text x="45" y="105" fontSize="9" fontWeight="bold" fill="#64748b">α</text>
+                              <g transform="rotate(-29.7 90 70)">
+                                <motion.rect
+                                  x="75"
+                                  y="55"
+                                  width="30"
+                                  height="30"
+                                  rx="3"
+                                  fill="#f1f5f9"
+                                  stroke="#0f172a"
+                                  strokeWidth="2"
+                                  initial={{ x: -20 }}
+                                  animate={{ x: 10 }}
+                                  transition={{ duration: 3, repeat: Infinity, repeatType: "reverse", ease: "easeInOut" }}
+                                />
+                                <line x1="90" y1="70" x2="90" y2="105" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="2 2" />
+                                <polygon points="90,105 87,100 93,100" fill="#ef4444" />
+                                <text x="96" y="98" fontSize="8" fontWeight="bold" fill="#ef4444">Fg</text>
+                                <line x1="90" y1="70" x2="90" y2="35" stroke="#3b82f6" strokeWidth="1.5" />
+                                <polygon points="90,35 87,40 93,40" fill="#3b82f6" />
+                                <text x="96" y="42" fontSize="8" fontWeight="bold" fill="#3b82f6">Fn</text>
+                                <line x1="90" y1="70" x2="55" y2="70" stroke="#f59e0b" strokeWidth="1.5" />
+                                <polygon points="55,70 60,67 60,73" fill="#f59e0b" />
+                                <text x="45" y="79" fontSize="8" fontWeight="bold" fill="#f59e0b">Ff</text>
+                              </g>
                             </svg>
                           </div>
                         )}
 
                         {subj.id === "chemistry" && (
                           <div className="relative w-full h-full flex items-center justify-center">
-                            <div className="flex gap-1">
-                              {[0, 1, 2].map((i) => (
-                                <div key={i} className="w-12 h-14 border-2 border-emerald-600 rounded-lg flex flex-col items-center justify-center relative bg-emerald-50/50">
-                                  <span className="text-[10px] font-black text-emerald-950 font-mono">H</span>
-                                  <div className="absolute top-1/2 left-full w-4 h-0.5 bg-emerald-600/80 -translate-y-1/2 last:hidden" />
-                                </div>
-                              ))}
-                            </div>
+                            <svg width="180" height="130" viewBox="0 0 180 130" className="overflow-visible">
+                              <g transform="translate(90, 65)">
+                                <motion.polygon
+                                  points="0,-40 34.6,-20 34.6,20 0,40 -34.6,20 -34.6,-20"
+                                  fill="rgba(16, 185, 129, 0.05)"
+                                  stroke="#10b981"
+                                  strokeWidth="2"
+                                  strokeLinejoin="round"
+                                  initial={{ strokeDasharray: "200", strokeDashoffset: "200" }}
+                                  animate={{ strokeDashoffset: "0" }}
+                                  transition={{ duration: 2.5 }}
+                                />
+                                <motion.circle
+                                  cx="0"
+                                  cy="0"
+                                  r="24"
+                                  fill="none"
+                                  stroke="#10b981"
+                                  strokeWidth="1.5"
+                                  strokeDasharray="6 4"
+                                  animate={{ rotate: 360 }}
+                                  transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+                                />
+                                <line x1="0" y1="-40" x2="0" y2="-60" stroke="#047857" strokeWidth="2" />
+                                <text x="0" y="-66" fontSize="10" fontWeight="extrabold" fill="#047857" textAnchor="middle" fontFamily="monospace">CH₃</text>
+                                <line x1="34.6" y1="20" x2="52" y2="30" stroke="#10b981" strokeWidth="1.5" />
+                                <text x="56" y="38" fontSize="9" fontWeight="bold" fill="#047857" textAnchor="start" fontFamily="monospace">OH</text>
+                                <line x1="-34.6" y1="20" x2="-52" y2="30" stroke="#10b981" strokeWidth="1.5" />
+                                <text x="-56" y="38" fontSize="9" fontWeight="bold" fill="#047857" textAnchor="end" fontFamily="monospace">NO₂</text>
+                              </g>
+                            </svg>
                           </div>
                         )}
 
                         {subj.id === "english" && (
-                          <div className="relative w-full h-full flex flex-col justify-center gap-1.5 px-4 text-start">
-                            <div className="h-0.5 w-full bg-slate-200" />
-                            <span className="text-base font-black font-serif text-amber-900 px-2 tracking-wide leading-none">Aesthetic Writing</span>
-                            <div className="h-0.5 w-full bg-slate-200" />
-                            <div className="h-0.5 w-full bg-slate-200" />
+                          <div className="relative w-full h-full flex flex-col justify-center px-6 text-start gap-1">
+                            <div className="relative w-full py-1">
+                              <div className="absolute top-0 left-0 w-full h-[1px] bg-sky-200" />
+                              <div className="absolute top-3 left-0 w-full h-[1px] bg-red-200/60 border-dashed border-b" />
+                              <div className="absolute top-6 left-0 w-full h-[1px] bg-red-200/60 border-dashed border-b" />
+                              <div className="absolute top-9 left-0 w-full h-[1px] bg-sky-200" />
+                              <div className="h-10 flex items-center pl-4">
+                                <motion.span
+                                  initial={{ opacity: 0 }}
+                                  animate={{ opacity: 1 }}
+                                  transition={{ duration: 1 }}
+                                  className="text-lg font-serif italic text-amber-900 tracking-wide select-none"
+                                >
+                                  NovaBoard
+                                </motion.span>
+                              </div>
+                            </div>
+                            <div className="mt-2 p-1.5 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between text-[10px] font-bold">
+                              <span className="text-amber-950 font-serif">Welcome (English)</span>
+                              <span className="text-slate-400">➔</span>
+                              <span className="text-indigo-950 font-medium">مرحباً (عربي)</span>
+                            </div>
                           </div>
                         )}
 
                         {subj.id === "arts" && (
-                          <div className="relative w-full h-full flex items-center justify-center gap-2">
-                            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-rose-400 to-pink-500 shadow-sm" />
-                            <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-purple-400 to-indigo-500 shadow-sm -mt-4" />
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-400 to-yellow-500 shadow-sm" />
-                            <Palette size={20} className="absolute bottom-4 right-6 text-slate-400" />
+                          <div className="relative w-full h-full flex items-center justify-center">
+                            <svg width="180" height="130" viewBox="0 0 180 130" className="overflow-visible">
+                              <motion.path
+                                d="M 40 70 C 40 40, 140 40, 140 70 C 140 100, 110 110, 90 110 C 80 110, 75 100, 65 100 C 55 100, 40 100, 40 70 Z"
+                                fill="#fafaf9"
+                                stroke="#d6d3d1"
+                                strokeWidth="2.5"
+                                animate={{ scale: [1, 1.03, 1] }}
+                                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+                              />
+                              <ellipse cx="65" cy="65" rx="8" ry="12" fill="#cbd5e1" transform="rotate(-30 65 65)" />
+                              <circle cx="95" cy="55" r="9" fill="#f43f5e" />
+                              <circle cx="115" cy="65" r="8" fill="#3b82f6" />
+                              <circle cx="110" cy="85" r="9" fill="#10b981" />
+                              <circle cx="85" cy="95" r="7" fill="#f59e0b" />
+                              <circle cx="50" cy="85" r="8" fill="#a855f7" />
+                              <g transform="translate(130, 30) rotate(-45)">
+                                <rect x="-3" y="0" width="6" height="40" fill="#78350f" rx="1" />
+                                <rect x="-4" y="40" width="8" height="10" fill="#94a3b8" />
+                                <path d="M -4 50 Q 0 65, 4 50 Z" fill="#ec4899" />
+                              </g>
+                            </svg>
                           </div>
                         )}
 
@@ -3505,12 +3866,7 @@ export default function App() {
           <footer className="w-full mt-20 bg-slate-900 border-t border-slate-800 py-12 relative z-10 text-slate-400 text-center text-xs font-medium">
             <div className="w-full max-w-7xl mx-auto px-6 md:px-12 flex flex-col md:flex-row items-center justify-between gap-6">
               <div className="flex items-center gap-2">
-                <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-sm font-black">
-                  N
-                </div>
-                <span className="font-extrabold text-white text-sm">
-                  Nova<span className="text-indigo-400">Board</span>
-                </span>
+                <NovaBoardLogo size={32} showText={true} showTagline={true} lightTheme={false} language={language} />
               </div>
               <p className="text-slate-500">
                 {language === "ar"
@@ -3518,14 +3874,22 @@ export default function App() {
                   : "All Rights Reserved © 2026 NovaBoard - Mr. Mohamed Elgazzar"}
               </p>
               <div className="flex items-center gap-4 text-slate-500 font-bold">
+                <button onClick={() => setView("privacy")} className="hover:text-indigo-400 transition-colors">
+                  {language === "ar" ? "سياسة الخصوصية" : "Privacy Policy"}
+                </button>
+                <span>•</span>
+                <button onClick={() => setView("contact")} className="hover:text-indigo-400 transition-colors">
+                  {language === "ar" ? "اتصل بنا" : "Contact Us"}
+                </button>
+                <span>•</span>
                 <a href="https://wa.me/201009617278" target="_blank" rel="noreferrer" className="hover:text-indigo-400 transition-colors">
                   WhatsApp
                 </a>
-                <span>•</span>
-                <span>Blogger SDK</span>
               </div>
             </div>
           </footer>
+
+
         </div>
       ) : (
         <div
@@ -3556,46 +3920,49 @@ export default function App() {
 
           {/* Main SaaS Premium Header */}
           <header
-            className={`relative z-20 px-8 py-3.5 flex items-center justify-between border-b border-slate-200/80 bg-white/60 backdrop-blur-md shadow-sm transition-all duration-300 ${
+            className={`relative z-20 px-3 sm:px-8 py-2 sm:py-3.5 flex flex-col md:flex-row gap-3 items-center justify-between border-b border-slate-200/80 bg-white/70 backdrop-blur-md shadow-sm transition-all duration-300 ${
               showTopBar
                 ? "translate-y-0 opacity-100"
                 : "-translate-y-full opacity-0 h-0 p-0 border-none overflow-hidden"
             }`}
           >
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200 hover:scale-105 transition-all">
-                  <svg
-                    width="22"
-                    height="22"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="white"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="m3 21 1.9-1.9a1 1 0 0 0 0-1.4l-1.4-1.4a1 1 0 0 0-1.4 0L.3 18.2" />
-                    <path d="m5 19 14-14" />
-                    <path d="m15 5 1.4-1.4a1 1 0 0 1 1.4 0l1.4 1.4a1 1 0 0 1 0 1.4L17.8 7.8" />
-                    <path d="m19 13 2 2" />
-                    <path d="m13 19 2 2" />
-                  </svg>
-                </div>
-                <div className="flex flex-col">
-                  <span className="font-bold text-xl tracking-tight text-slate-800 leading-none">
-                    {t.title}
+            <div className="flex flex-wrap items-center justify-between w-full md:w-auto gap-3 sm:gap-4">
+              {/* Anchor: Logo and localized App Name */}
+              <div className="flex items-center gap-2.5 shrink-0">
+                <NovaBoardLogo size={32} showText={false} language={language} />
+                <div className="flex flex-col border-l border-slate-200 pl-3 ml-1 rtl:border-l-0 rtl:border-r rtl:pl-0 rtl:pr-3 rtl:ml-0 rtl:mr-1">
+                  <span className="font-extrabold text-sm sm:text-base tracking-tight text-slate-900 leading-none">
+                    {language === "ar" ? "نوفا بورد" : "NovaBoard"}
                   </span>
-                  <span className="text-[10px] font-medium text-slate-400 mt-0.5">
+                  <span className="text-[9.5px] font-bold text-indigo-500 mt-1.5 hidden sm:inline-block">
                     {language === "ar"
                       ? "السبورة التفاعلية الذكية"
                       : "Premium Smartboard"}
                   </span>
                 </div>
               </div>
-              <div className="h-7 w-px bg-slate-200/70 mx-1"></div>
 
-              <div className="flex items-center gap-3">
+              {/* Elegant divider */}
+              <div className="hidden xs:block h-6 w-px bg-slate-200/80 mx-1"></div>
+
+              {/* Back to Home Button */}
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setView("landing")}
+                className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-indigo-600 rounded-xl text-xs font-bold transition-all cursor-pointer border border-slate-200/60 shadow-xs shrink-0"
+                title={language === "ar" ? "الرجوع للصفحة الترحيبية" : "Go back to landing page"}
+              >
+                <ArrowLeft size={13} className={language === "ar" ? "rotate-180" : ""} />
+                <span className="hidden xs:inline-block">{language === "ar" ? "الرئيسية" : "Home"}</span>
+                <span className="xs:hidden">{language === "ar" ? "الرئيسية" : "Home"}</span>
+              </motion.button>
+
+              {/* Elegant divider */}
+              <div className="hidden xs:block h-6 w-px bg-slate-200/80 mx-1"></div>
+
+              {/* Lesson Title Input */}
+              <div className="flex items-center gap-1.5 sm:gap-3">
                 <input
                   type="text"
                   value={boardTitle}
@@ -3605,7 +3972,7 @@ export default function App() {
                       ? "اكتب عنوان الدرس هنا..."
                       : "Type lesson title..."
                   }
-                  className="text-sm font-semibold text-slate-700 bg-transparent border-none focus:outline-none focus:ring-1 focus:ring-indigo-200 px-2 py-1 rounded max-w-[200px]"
+                  className="text-xs sm:text-sm font-semibold text-slate-700 bg-transparent border-none focus:outline-none focus:ring-1 focus:ring-indigo-200 px-1 sm:px-2 py-0.5 sm:py-1 rounded max-w-[100px] sm:max-w-[200px]"
                   title={
                     language === "ar"
                       ? "اضغط لتعديل العنوان"
@@ -3613,16 +3980,16 @@ export default function App() {
                   }
                 />
                 <div
-                  className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 ${isSaving ? "bg-amber-100 text-amber-700 border-amber-200/50" : "bg-emerald-100 text-emerald-700 border-emerald-200/50"} border`}
+                  className={`px-1.5 sm:px-2 py-0.5 rounded text-[8px] sm:text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 ${isSaving ? "bg-amber-100 text-amber-700 border-amber-200/50" : "bg-emerald-100 text-emerald-700 border-emerald-200/50"} border`}
                 >
                   {isSaving ? (
-                    <RotateCw size={10} className="animate-spin" />
+                    <RotateCw size={9} className="animate-spin" />
                   ) : (
-                    <Check size={10} strokeWidth={3} />
+                    <Check size={9} strokeWidth={3} />
                   )}
                   {isSaving
                     ? language === "ar"
-                      ? "جاري الحفظ..."
+                      ? "جاري..."
                       : "Saving..."
                     : t.saved}
                 </div>
@@ -3630,23 +3997,23 @@ export default function App() {
             </div>
 
             {/* Header Right Interactions */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 flex-wrap md:flex-nowrap justify-end w-full md:w-auto">
               {/* User Auth */}
               {user ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-600 hidden sm:inline-block">
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <span className="text-xs font-semibold text-slate-600 hidden lg:inline-block">
                     {user.displayName?.split(" ")[0]}
                   </span>
                   {user.photoURL && (
                     <img
                       src={user.photoURL}
                       alt="User"
-                      className="w-7 h-7 rounded-full shadow-sm"
+                      className="w-6 h-6 sm:w-7 sm:h-7 rounded-full shadow-xs"
                     />
                   )}
                   <button
                     onClick={handleLogout}
-                    className="px-2 py-1 bg-slate-100 hover:bg-red-50 text-slate-600 hover:text-red-600 text-xs font-bold rounded-lg transition-colors cursor-pointer border border-slate-200 hover:border-red-200"
+                    className="px-2 py-0.5 sm:py-1 bg-slate-100 hover:bg-red-50 text-slate-600 hover:text-red-600 text-[10px] sm:text-xs font-bold rounded-lg transition-colors cursor-pointer border border-slate-200 hover:border-red-200"
                     title={language === "ar" ? "تسجيل الخروج" : "Log out"}
                   >
                     {language === "ar" ? "خروج" : "Logout"}
@@ -3655,10 +4022,21 @@ export default function App() {
               ) : (
                 <button
                   onClick={handleLogin}
-                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shadow-sm flex items-center gap-1.5"
+                  disabled={isLoggingIn}
+                  className={`px-2 py-1 text-white text-[10px] sm:text-xs font-bold rounded-lg transition-colors shadow-xs flex items-center gap-1 ${
+                    isLoggingIn
+                      ? "bg-indigo-400 cursor-not-allowed"
+                      : "bg-indigo-600 hover:bg-indigo-700 cursor-pointer"
+                  }`}
                 >
-                  <Globe size={14} />
-                  {language === "ar" ? "تسجيل الدخول" : "Sign in"}
+                  {isLoggingIn ? (
+                    <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  ) : (
+                    <Globe size={12} />
+                  )}
+                  {isLoggingIn
+                    ? (language === "ar" ? "جاري..." : "Signing...")
+                    : (language === "ar" ? "دخول" : "Sign in")}
                 </button>
               )}
 
@@ -3667,23 +4045,23 @@ export default function App() {
               {/* Quick Help Guide Button */}
               <button
                 onClick={() => setShowHelp(!showHelp)}
-                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition-all"
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition-all"
                 title={t.help}
               >
-                <HelpCircle size={18} />
+                <HelpCircle size={16} />
               </button>
 
               {/* RTL / LTR Language Switcher */}
               <div className="flex bg-slate-100 rounded-lg p-0.5 border border-slate-200/80">
                 <button
                   onClick={() => setLanguage("en")}
-                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${language === "en" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500"}`}
+                  className={`px-2 sm:px-3 py-0.5 sm:py-1 text-[10px] sm:text-[11px] font-bold rounded-md transition-all ${language === "en" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500"}`}
                 >
                   EN
                 </button>
                 <button
                   onClick={() => setLanguage("ar")}
-                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${language === "ar" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500"}`}
+                  className={`px-2 sm:px-3 py-0.5 sm:py-1 text-[10px] sm:text-[11px] font-bold rounded-md transition-all ${language === "ar" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500"}`}
                 >
                   عربي
                 </button>
@@ -3701,7 +4079,7 @@ export default function App() {
                     : "Hide Header (Full Screen) 🖥️"
                 }
               >
-                <XCircle size={18} />
+                <XCircle size={16} />
               </button>
             </div>
           </header>
@@ -3720,7 +4098,7 @@ export default function App() {
               onTouchStart={handleMouseDown}
               onTouchMove={handleMouseMove}
               onTouchEnd={handleMouseUp}
-              className="absolute inset-0 z-10 cursor-crosshair block"
+              className="absolute inset-0 z-10 cursor-crosshair block touch-none"
             />
 
             {/* Floating Interactive Sticky Notes layer on top */}
@@ -4441,27 +4819,44 @@ export default function App() {
 
             {/* Restore Top Bar Button */}
             {!showTopBar && (
-              <button
-                onClick={() => setShowTopBar(true)}
-                className="absolute top-4 left-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full p-3.5 shadow-2xl cursor-pointer hover:scale-105 transition-all z-35 flex items-center justify-center group"
-                title={
-                  language === "ar" ? "إظهار شريط العنوان 🖥️" : "Show Header 🖥️"
-                }
-              >
-                <ChevronDown size={18} className="animate-pulse" />
-                <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 text-[10px] font-black uppercase tracking-wider block ml-0 group-hover:ml-1.5 whitespace-nowrap">
-                  {language === "ar"
-                    ? "إظهار شريط العنوان 🖥️"
-                    : "Show Header 🖥️"}
-                </span>
-              </button>
+              <div className="absolute top-4 left-4 flex items-center gap-2 z-35">
+                <button
+                  onClick={() => setShowTopBar(true)}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-full p-3 shadow-2xl cursor-pointer hover:scale-105 transition-all flex items-center justify-center group"
+                  title={
+                    language === "ar" ? "إظهار شريط العنوان 🖥️" : "Show Header 🖥️"
+                  }
+                >
+                  <ChevronDown size={18} className="animate-pulse" />
+                  <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 text-[10px] font-black uppercase tracking-wider block ml-0 group-hover:ml-1.5 whitespace-nowrap">
+                    {language === "ar"
+                      ? "إظهار شريط العنوان"
+                      : "Show Header"}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => setView("landing")}
+                  className="bg-slate-800 hover:bg-slate-900 text-white rounded-full p-3 shadow-2xl cursor-pointer hover:scale-105 transition-all flex items-center justify-center group"
+                  title={
+                    language === "ar" ? "العودة للرئيسية" : "Back to Home"
+                  }
+                >
+                  <ArrowLeft size={18} className={language === "ar" ? "rotate-180" : ""} />
+                  <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 text-[10px] font-black uppercase tracking-wider block ml-0 group-hover:ml-1.5 whitespace-nowrap">
+                    {language === "ar"
+                      ? "الرئيسية"
+                      : "Home"}
+                  </span>
+                </button>
+              </div>
             )}
 
             {/* Restore Sidebar Button */}
             {!showSidebar && (
               <button
                 onClick={() => setShowSidebar(true)}
-                className="absolute left-4 top-1/2 -translate-y-1/2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full p-3.5 shadow-2xl cursor-pointer hover:scale-105 transition-all z-30 flex items-center justify-center group"
+                className="absolute bottom-4 left-1/2 -translate-x-1/2 md:left-4 md:-translate-x-0 md:top-1/2 md:-translate-y-1/2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full p-3.5 shadow-2xl cursor-pointer hover:scale-105 transition-all z-30 flex items-center justify-center group"
                 title={
                   language === "ar"
                     ? "إظهار شريط الأدوات 🛠️"
@@ -4477,25 +4872,25 @@ export default function App() {
 
             {/* Floating Left Tool Panel - Elegant Vertical Sidebar */}
             <div
-              className={`absolute left-6 top-1/2 -translate-y-1/2 z-30 select-none flex gap-4 items-center transition-all duration-300 ${
+              className={`absolute bottom-4 md:bottom-auto left-1/2 -translate-x-1/2 md:translate-x-0 md:left-6 md:top-1/2 md:-translate-y-1/2 z-30 select-none flex flex-col-reverse md:flex-row gap-2 sm:gap-4 items-center md:items-start transition-all duration-300 max-w-[95vw] md:max-w-none max-h-[85vh] flex-wrap md:flex-nowrap justify-center pb-2 sm:pb-0 ${
                 showSidebar
-                  ? "translate-x-0 opacity-100"
-                  : "-translate-x-96 opacity-0 pointer-events-none"
+                  ? "translate-y-0 opacity-100"
+                  : "translate-y-24 md:-translate-x-96 md:translate-y-0 opacity-0 pointer-events-none"
               }`}
               dir="ltr"
             >
-              {/* Primary Vertical Toolbar */}
-              <nav className="flex flex-col gap-2 p-2 bg-white border border-slate-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.08)] rounded-[32px] w-[56px] items-center">
+              {/* Primary Toolbar */}
+              <nav className="flex flex-row md:flex-col gap-1.5 sm:gap-2 p-1.5 sm:p-2 bg-white border border-slate-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.08)] rounded-2xl sm:rounded-[32px] w-auto md:w-[56px] items-center justify-center flex-wrap md:flex-nowrap shrink-0">
                 {/* Cursor Selection */}
                 <button
                   onClick={() => {
                     setActiveTool("select");
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer ${activeTool === "select" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${activeTool === "select" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
                   title={language === "ar" ? "أداة التحديد" : "Selection Tool"}
                 >
-                  <MousePointer size={20} />
+                  <MousePointer size={18} className="sm:w-5 sm:h-5" />
                 </button>
 
                 {/* Hand Pan Tool */}
@@ -4504,13 +4899,13 @@ export default function App() {
                     setActiveTool("pan");
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer ${activeTool === "pan" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${activeTool === "pan" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
                   title={language === "ar" ? "أداة التحريك" : "Pan Board"}
                 >
-                  <Hand size={20} />
+                  <Hand size={18} className="sm:w-5 sm:h-5" />
                 </button>
 
-                <div className="w-8 h-px bg-slate-100 my-0.5" />
+                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
 
                 {/* Freehand Pencil (yellow marker body style) */}
                 <button
@@ -4523,15 +4918,15 @@ export default function App() {
                     }
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer relative ${activeTool === "pen" ? "bg-amber-50 text-amber-600 shadow-sm border border-amber-100 ring-2 ring-amber-200/50" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer relative ${activeTool === "pen" ? "bg-amber-50 text-amber-600 shadow-sm border border-amber-100 ring-2 ring-amber-200/50" : "text-slate-500 hover:bg-slate-50"}`}
                   title={
                     language === "ar"
                       ? "القلم الحر • اضغط مرتين لفتح الإعدادات"
                       : "Freehand Pen • Double click for settings"
                   }
                 >
-                  <PenTool size={20} />
-                  <div className="absolute bottom-1 right-1 w-2 h-2 rounded-full bg-amber-500" />
+                  <PenTool size={18} className="sm:w-5 sm:h-5" />
+                  <div className="absolute bottom-1 right-1 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-amber-500" />
                 </button>
 
                 {/* Eraser */}
@@ -4545,14 +4940,14 @@ export default function App() {
                     }
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer relative ${activeTool === "eraser" ? "bg-slate-100 text-slate-800 shadow-sm border border-slate-200 ring-2 ring-slate-300/30" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer relative ${activeTool === "eraser" ? "bg-slate-100 text-slate-800 shadow-sm border border-slate-200 ring-2 ring-slate-300/30" : "text-slate-500 hover:bg-slate-50"}`}
                   title={
                     language === "ar"
                       ? "الممحاة الذكية • اضغط مرتين لفتح الإعدادات"
                       : "Eraser Tool • Double click for settings"
                   }
                 >
-                  <Eraser size={20} />
+                  <Eraser size={18} className="sm:w-5 sm:h-5" />
                 </button>
 
                 {/* 3D-styled Geometric Shapes Menu button */}
@@ -4580,10 +4975,10 @@ export default function App() {
                       setActiveTool("rect");
                     }
                   }}
-                  className={`w-11 h-11 flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer relative ${
+                  className={`w-9 h-9 sm:w-11 sm:h-11 flex flex-col items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer relative ${
                     showShapesSubmenu
-                      ? "bg-gradient-to-b from-indigo-500 to-indigo-600 text-white shadow-[0_4px_0_0_#312e81] border-t border-indigo-400 translate-y-[-2px] active:translate-y-[2px] active:shadow-none font-sans"
-                      : "bg-white text-slate-600 border border-slate-200 shadow-[0_3px_0_0_#cbd5e1] hover:bg-slate-50 active:translate-y-[2px] active:shadow-none font-sans"
+                      ? "bg-gradient-to-b from-indigo-500 to-indigo-600 text-white shadow-[0_3px_0_0_#312e81] sm:shadow-[0_4px_0_0_#312e81] border-t border-indigo-400 translate-y-[-2px] active:translate-y-[2px] active:shadow-none font-sans"
+                      : "bg-white text-slate-600 border border-slate-200 shadow-[0_2px_0_0_#cbd5e1] sm:shadow-[0_3px_0_0_#cbd5e1] hover:bg-slate-50 active:translate-y-[2px] active:shadow-none font-sans"
                   }`}
                   title={
                     language === "ar"
@@ -4592,14 +4987,14 @@ export default function App() {
                   }
                 >
                   <Box
-                    size={20}
+                    size={18}
                     className={
                       showShapesSubmenu
-                        ? "text-white drop-shadow-sm"
-                        : "text-indigo-600"
+                        ? "text-white drop-shadow-sm sm:w-5 sm:h-5"
+                        : "text-indigo-600 sm:w-5 sm:h-5"
                     }
                   />
-                  <div className="absolute -bottom-1 -right-1 bg-amber-500 text-[8px] text-white font-black px-1 rounded-full scale-90 border border-white">
+                  <div className="absolute -bottom-1 -right-1 bg-amber-500 text-[7px] sm:text-[8px] text-white font-black px-1 rounded-full scale-90 border border-white">
                     3D
                   </div>
                 </button>
@@ -4610,22 +5005,22 @@ export default function App() {
                     setActiveTool("text");
                     setOpenShapesPanel(null);
                   }}
-                  className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer ${activeTool === "text" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${activeTool === "text" ? "bg-blue-50 text-blue-600 shadow-sm border border-blue-100" : "text-slate-500 hover:bg-slate-50"}`}
                   title={language === "ar" ? "إضافة نص" : "Add Text"}
                 >
-                  <Type size={20} />
+                  <Type size={18} className="sm:w-5 sm:h-5" />
                 </button>
 
                 {/* Add Sticky Note (Yellow origami folded style) */}
                 <button
                   onClick={handleAddSticky}
-                  className="w-10 h-10 flex items-center justify-center rounded-2xl text-amber-500 hover:bg-amber-50 hover:text-amber-600 transition-all cursor-pointer relative"
+                  className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl text-amber-500 hover:bg-amber-50 hover:text-amber-600 transition-all cursor-pointer relative"
                   title={language === "ar" ? "ملاحظة لاصقة" : "Add Sticky Note"}
                 >
-                  <StickyIcon size={20} className="fill-amber-50" />
+                  <StickyIcon size={18} className="fill-amber-50 sm:w-5 sm:h-5" />
                 </button>
 
-                <div className="w-8 h-px bg-slate-100 my-0.5" />
+                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
 
                 <div className="relative">
                   <button
@@ -4635,12 +5030,12 @@ export default function App() {
                       setShowMagicPopover(false);
                       setShowAppsPopover(false);
                     }}
-                    className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer ${showExportPopover ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${showExportPopover ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "text-slate-500 hover:bg-slate-50"}`}
                     title={
                       language === "ar" ? "تصدير السبورة" : "Export Whiteboard"
                     }
                   >
-                    <Download size={20} />
+                    <Download size={18} className="sm:w-5 sm:h-5" />
                   </button>
                 </div>
 
@@ -4652,14 +5047,14 @@ export default function App() {
                       setShowFolderPopover(false);
                       setShowAppsPopover(false);
                     }}
-                    className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer ${showMagicPopover ? "bg-purple-50 text-purple-600 border border-purple-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${showMagicPopover ? "bg-purple-50 text-purple-600 border border-purple-100" : "text-slate-500 hover:bg-slate-50"}`}
                     title={
                       language === "ar"
                         ? "صندوق الأدوات السحري"
                         : "Magic Tool Box"
                     }
                   >
-                    <Wand2 size={20} />
+                    <Wand2 size={18} className="sm:w-5 sm:h-5" />
                   </button>
                 </div>
 
@@ -4668,49 +5063,49 @@ export default function App() {
                   onClick={() => {
                     setShowBrowserHelper(!showBrowserHelper);
                   }}
-                  className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer ${showBrowserHelper ? "bg-sky-50 text-sky-600 border border-sky-100 ring-2 ring-sky-200/50" : "text-slate-500 hover:bg-slate-50"}`}
+                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${showBrowserHelper ? "bg-sky-50 text-sky-600 border border-sky-100 ring-2 ring-sky-200/50" : "text-slate-500 hover:bg-slate-50"}`}
                   title={
                     language === "ar"
                       ? "مستعرض الويب المساعد والآلة الحاسبة"
                       : "Web Resource Browser & Calculator"
                   }
                 >
-                  <Globe size={20} />
+                  <Globe size={18} className="sm:w-5 sm:h-5" />
                 </button>
 
-                <div className="w-8 h-px bg-slate-100 my-0.5" />
+                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
 
                 {/* Undo */}
                 <button
                   onClick={handleUndo}
                   disabled={historyIndex <= 0}
-                  className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer ${historyIndex > 0 ? "text-slate-600 hover:bg-slate-50" : "text-slate-300 cursor-not-allowed"}`}
+                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${historyIndex > 0 ? "text-slate-600 hover:bg-slate-50" : "text-slate-300 cursor-not-allowed"}`}
                   title={language === "ar" ? "تراجع" : "Undo"}
                 >
-                  <Undo2 size={18} />
+                  <Undo2 size={16} className="sm:w-4 sm:h-4" />
                 </button>
 
                 {/* Redo */}
                 <button
                   onClick={handleRedo}
                   disabled={historyIndex >= history.length - 1}
-                  className={`w-10 h-10 flex items-center justify-center rounded-2xl transition-all cursor-pointer ${historyIndex < history.length - 1 ? "text-slate-600 hover:bg-slate-50" : "text-slate-300 cursor-not-allowed"}`}
+                  className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl transition-all cursor-pointer ${historyIndex < history.length - 1 ? "text-slate-600 hover:bg-slate-50" : "text-slate-300 cursor-not-allowed"}`}
                   title={language === "ar" ? "إعادة" : "Redo"}
                 >
-                  <Redo2 size={18} />
+                  <Redo2 size={16} className="sm:w-4 sm:h-4" />
                 </button>
 
-                <div className="w-8 h-px bg-slate-100 my-0.5 shrink-0" />
+                <div className="w-px h-6 md:w-8 md:h-px bg-slate-200 my-0 mx-0.5 md:mx-0 md:my-0.5 shrink-0" />
 
                 {/* Hide Sidebar Button */}
                 <button
                   onClick={() => setShowSidebar(false)}
-                  className="w-10 h-10 flex items-center justify-center rounded-2xl text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all cursor-pointer shrink-0"
+                  className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-2xl text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all cursor-pointer shrink-0"
                   title={
                     language === "ar" ? "إخفاء شريط الأدوات" : "Hide Toolbar"
                   }
                 >
-                  <XCircle size={20} />
+                  <XCircle size={18} className="sm:w-5 sm:h-5" />
                 </button>
               </nav>
 
@@ -4878,14 +5273,14 @@ export default function App() {
 
               {/* Secondary Shapes Submenu - Appears next to primary menu if shapes active */}
               {showShapesSubmenu && (
-                <nav className="flex flex-col gap-2 p-2 bg-white border border-slate-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.08)] rounded-[32px] w-[52px] items-center animate-in slide-in-from-left duration-200">
+                <nav className="flex flex-row md:flex-col gap-2 p-2 bg-white border border-slate-200/80 shadow-[0_12px_40px_rgba(0,0,0,0.08)] rounded-2xl md:rounded-[32px] w-auto md:w-[52px] h-auto items-center justify-center animate-in slide-in-from-bottom md:slide-in-from-left duration-200 flex-wrap md:flex-nowrap shrink-0">
                   {/* Rectangle shape */}
                   <button
                     onClick={() => {
                       setActiveTool("rect");
                       setOpenShapesPanel(null);
                     }}
-                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer ${activeTool === "rect" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer shrink-0 ${activeTool === "rect" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
                     title={language === "ar" ? "مستطيل" : "Rectangle"}
                   >
                     <Square size={18} />
@@ -4897,7 +5292,7 @@ export default function App() {
                       setActiveTool("circle");
                       setOpenShapesPanel(null);
                     }}
-                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer ${activeTool === "circle" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer shrink-0 ${activeTool === "circle" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
                     title={language === "ar" ? "دائرة" : "Circle"}
                   >
                     <CircleIcon size={18} />
@@ -4909,13 +5304,13 @@ export default function App() {
                       setActiveTool("triangle");
                       setOpenShapesPanel(null);
                     }}
-                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer ${activeTool === "triangle" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer shrink-0 ${activeTool === "triangle" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
                     title={language === "ar" ? "مثلث" : "Triangle"}
                   >
                     <Layers size={18} className="rotate-45 text-slate-400" />
                   </button>
 
-                  <div className="w-7 h-px bg-slate-100 my-0.5" />
+                  <div className="w-px h-7 md:w-7 md:h-px bg-slate-100 my-0 mx-1 md:mx-0 md:my-0.5 shrink-0" />
 
                   {/* 2D shapes list toggle (overlapping shapes on blue background exactly like photo) */}
                   <button
@@ -4924,7 +5319,7 @@ export default function App() {
                         openShapesPanel === "2d" ? null : "2d",
                       );
                     }}
-                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer ${openShapesPanel === "2d" || ["triangle", "right_triangle", "star", "pentagon", "hexagon", "ellipse", "rhombus", "parallelogram", "trapezoid", "heart", "crescent", "cross"].includes(activeTool) ? "bg-blue-600 text-white shadow-md" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer shrink-0 ${openShapesPanel === "2d" || ["triangle", "right_triangle", "star", "pentagon", "hexagon", "ellipse", "rhombus", "parallelogram", "trapezoid", "heart", "crescent", "cross"].includes(activeTool) ? "bg-blue-600 text-white shadow-md" : "text-slate-500 hover:bg-slate-50"}`}
                     title={
                       language === "ar"
                         ? "أشكال ثنائية الأبعاد إضافية"
@@ -4940,7 +5335,7 @@ export default function App() {
                       setActiveTool("line");
                       setOpenShapesPanel(null);
                     }}
-                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer ${activeTool === "line" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer shrink-0 ${activeTool === "line" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
                     title={language === "ar" ? "خط مستقيم" : "Straight Line"}
                   >
                     <Minus size={18} />
@@ -4952,7 +5347,7 @@ export default function App() {
                       setActiveTool("arrow");
                       setOpenShapesPanel(null);
                     }}
-                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer ${activeTool === "arrow" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer shrink-0 ${activeTool === "arrow" ? "bg-indigo-50 text-indigo-600 shadow-inner border border-indigo-100" : "text-slate-500 hover:bg-slate-50"}`}
                     title={language === "ar" ? "سهم متجه" : "Vector Arrow"}
                   >
                     <ArrowUpRight size={18} />
@@ -4965,7 +5360,7 @@ export default function App() {
                         openShapesPanel === "3d" ? null : "3d",
                       );
                     }}
-                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer ${openShapesPanel === "3d" || ["cube", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "tetrahedron"].includes(activeTool) ? "bg-blue-600 text-white shadow-md" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer shrink-0 ${openShapesPanel === "3d" || ["cube", "sphere", "cylinder", "cone", "pyramid", "prism", "torus", "tetrahedron"].includes(activeTool) ? "bg-blue-600 text-white shadow-md" : "text-slate-500 hover:bg-slate-50"}`}
                     title={
                       language === "ar"
                         ? "أشكال مجسمة ثلاثية الأبعاد"
@@ -4985,7 +5380,7 @@ export default function App() {
                           : "Coordinate math square grids activated!",
                       );
                     }}
-                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer ${gridType === "grid" ? "bg-sky-50 text-sky-600 border border-sky-100" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer shrink-0 ${gridType === "grid" ? "bg-sky-50 text-sky-600 border border-sky-100" : "text-slate-500 hover:bg-slate-50"}`}
                     title={
                       language === "ar"
                         ? "إضافة جدول أو شبكة بيانية"
@@ -4995,22 +5390,22 @@ export default function App() {
                     <Table size={18} />
                   </button>
 
-                  <div className="w-7 h-px bg-slate-100 my-0.5" />
+                  <div className="w-px h-7 md:w-7 md:h-px bg-slate-100 my-0 mx-1 md:mx-0 md:my-0.5 shrink-0" />
 
                   {/* Collapse Submenu */}
                   <button
                     onClick={() => setShowShapesSubmenu(false)}
-                    className="w-9 h-9 flex items-center justify-center rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-all cursor-pointer"
+                    className="w-9 h-9 flex items-center justify-center rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-all cursor-pointer shrink-0"
                     title={language === "ar" ? "إغلاق القائمة" : "Close Menu"}
                   >
-                    <ChevronUp size={16} />
+                    <ChevronUp size={16} className="rotate-90 md:rotate-0" />
                   </button>
                 </nav>
               )}
 
               {/* Popover panel for ALL 2D Shapes */}
               {openShapesPanel === "2d" && (
-                <div className="absolute left-[134px] md:left-[144px] top-1/2 -translate-y-1/2 bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-72 z-40 animate-in zoom-in-95 duration-150">
+                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[144px] top-auto md:top-1/2 md:-translate-y-1/2 bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-72 z-40 animate-in zoom-in-95 duration-150">
                   <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
                     <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
                       {language === "ar"
@@ -5131,7 +5526,7 @@ export default function App() {
 
               {/* Popover panel for ALL 3D Shapes */}
               {openShapesPanel === "3d" && (
-                <div className="absolute left-[134px] md:left-[144px] top-1/2 -translate-y-1/2 bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-72 z-40 animate-in zoom-in-95 duration-150">
+                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[144px] top-auto md:top-1/2 md:-translate-y-1/2 bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-72 z-40 animate-in zoom-in-95 duration-150">
                   <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
                     <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
                       {language === "ar"
@@ -5216,7 +5611,7 @@ export default function App() {
 
               {/* Popover panel for Export */}
               {showExportPopover && (
-                <div className="absolute left-[70px] top-[140px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-56 z-40 animate-in zoom-in-95 duration-150">
+                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[70px] top-auto md:top-[140px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-56 z-40 animate-in zoom-in-95 duration-150">
                   <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
                     <h4 className="text-xs font-bold text-slate-800">
                       {language === "ar"
@@ -5257,7 +5652,7 @@ export default function App() {
 
               {/* Popover panel for Magic Tools */}
               {showMagicPopover && (
-                <div className="absolute left-[70px] top-[230px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-60 z-40 animate-in zoom-in-95 duration-150">
+                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[70px] top-auto md:top-[230px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-60 z-40 animate-in zoom-in-95 duration-150">
                   <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
                     <h4 className="text-xs font-bold text-slate-800">
                       {language === "ar"
@@ -5389,7 +5784,7 @@ export default function App() {
 
               {/* Popover panel for App Layout Grids */}
               {showAppsPopover && (
-                <div className="absolute left-[70px] top-[320px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-56 z-40 animate-in zoom-in-95 duration-150">
+                <div className="absolute bottom-[calc(100%+1rem)] md:bottom-auto left-1/2 -translate-x-1/2 md:-translate-x-0 md:left-[70px] top-auto md:top-[320px] bg-white border border-slate-200 shadow-2xl p-4 rounded-3xl w-56 z-40 animate-in zoom-in-95 duration-150">
                   <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
                     <h4 className="text-xs font-bold text-slate-800">
                       {language === "ar"
@@ -5440,7 +5835,7 @@ export default function App() {
 
             {/* Help & Guide overlay on board */}
             {showHelp && (
-              <div className="absolute top-6 left-28 p-5 bg-white border border-slate-200/80 shadow-2xl rounded-2xl w-80 z-30">
+              <div className="absolute top-16 md:top-6 left-4 md:left-28 p-5 bg-white border border-slate-200/80 shadow-2xl rounded-2xl w-[calc(100%-2rem)] md:w-80 z-30">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
                     <Info size={14} className="text-indigo-500" />
@@ -5461,7 +5856,7 @@ export default function App() {
 
             {/* Interactive Web Assistant & Educational Helper */}
             {showBrowserHelper && (
-              <div className="absolute top-6 right-6 bottom-24 w-96 bg-white/95 backdrop-blur-md border border-slate-200 shadow-2xl rounded-3xl z-40 flex flex-col overflow-hidden animate-in slide-in-from-right duration-300">
+              <div className="absolute top-16 md:top-6 right-4 md:right-6 bottom-28 md:bottom-24 w-[calc(100%-2rem)] md:w-96 bg-white/95 backdrop-blur-md border border-slate-200 shadow-2xl rounded-3xl z-40 flex flex-col overflow-hidden animate-in slide-in-from-right duration-300">
                 {/* Header */}
                 <div className="p-4 bg-gradient-to-r from-sky-500 to-indigo-600 text-white flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-2">
@@ -5796,7 +6191,7 @@ export default function App() {
             {!showBottomBar && (
               <button
                 onClick={() => setShowBottomBar(true)}
-                className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-white/95 border border-slate-200 hover:border-indigo-200 text-indigo-600 font-extrabold text-[11px] rounded-full px-4 py-2 shadow-2xl cursor-pointer hover:scale-105 transition-all z-30 flex items-center gap-1.5 animate-bounce"
+                className="absolute bottom-20 md:bottom-4 left-1/2 -translate-x-1/2 bg-white/95 border border-slate-200 hover:border-indigo-200 text-indigo-600 font-extrabold text-[11px] rounded-full px-4 py-2 shadow-2xl cursor-pointer hover:scale-105 transition-all z-30 flex items-center gap-1.5 animate-bounce"
                 title={
                   language === "ar"
                     ? "إظهار شريط التحكم السفلي"
@@ -5812,56 +6207,58 @@ export default function App() {
 
             {/* Floating Bottom Toolbar (Zoom, Grid) */}
             <div
-              className={`absolute left-1/2 -translate-x-1/2 flex items-center gap-4 bg-white/90 backdrop-blur-md border border-slate-200 px-5 py-2.5 rounded-2xl shadow-xl z-30 transition-all duration-300 ${
+              className={`absolute left-1/2 -translate-x-1/2 flex flex-wrap md:flex-nowrap items-center justify-center gap-1.5 sm:gap-4 bg-white/95 backdrop-blur-md border border-slate-200 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-2xl shadow-xl z-30 transition-all duration-300 max-w-[95vw] md:max-w-max ${
                 showBottomBar
-                  ? "bottom-8 opacity-100"
-                  : "bottom-[-100px] opacity-0 pointer-events-none"
+                  ? "bottom-20 md:bottom-8 opacity-100"
+                  : "bottom-[-150px] opacity-0 pointer-events-none"
               }`}
             >
               {/* Zoom controls */}
-              <button
-                onClick={() => setZoom(Math.max(50, zoom - 25))}
-                className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 cursor-pointer"
-              >
-                <Minus size={18} />
-              </button>
+              <div className="flex items-center gap-1 sm:gap-1.5">
+                <button
+                  onClick={() => setZoom(Math.max(50, zoom - 25))}
+                  className="p-1 sm:p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 cursor-pointer"
+                >
+                  <Minus size={14} className="sm:w-[18px] sm:h-[18px]" />
+                </button>
 
-              <span className="text-xs font-bold text-slate-700 w-10 text-center tabular-nums">
-                {zoom}%
-              </span>
+                <span className="text-[10px] sm:text-xs font-bold text-slate-700 w-8 sm:w-10 text-center tabular-nums">
+                  {zoom}%
+                </span>
 
-              <button
-                onClick={() => setZoom(Math.min(200, zoom + 25))}
-                className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 cursor-pointer"
-              >
-                <Plus size={18} />
-              </button>
+                <button
+                  onClick={() => setZoom(Math.min(200, zoom + 25))}
+                  className="p-1 sm:p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 cursor-pointer"
+                >
+                  <Plus size={14} className="sm:w-[18px] sm:h-[18px]" />
+                </button>
+              </div>
 
-              <div className="w-px h-4 bg-slate-200 mx-1"></div>
+              <div className="hidden xs:block w-px h-4 bg-slate-200 mx-0.5 sm:mx-1"></div>
 
               {/* Grid Background Switcher */}
-              <div className="flex bg-slate-100 rounded-lg p-0.5 border border-slate-200">
+              <div className="flex bg-slate-100 rounded-lg p-0.5 border border-slate-200/50 scale-90 sm:scale-100 origin-center">
                 <button
                   onClick={() => setGridType("dots")}
-                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${gridType === "dots" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500"}`}
+                  className={`px-1.5 sm:px-3 py-0.5 sm:py-1 text-[9px] sm:text-[11px] font-bold rounded-md transition-all ${gridType === "dots" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500"}`}
                 >
                   {language === "ar" ? "نقاط" : "Dots"}
                 </button>
                 <button
                   onClick={() => setGridType("grid")}
-                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${gridType === "grid" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500"}`}
+                  className={`px-1.5 sm:px-3 py-0.5 sm:py-1 text-[9px] sm:text-[11px] font-bold rounded-md transition-all ${gridType === "grid" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500"}`}
                 >
                   {language === "ar" ? "مربعات" : "Grid"}
                 </button>
                 <button
                   onClick={() => setGridType("lines")}
-                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${gridType === "lines" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500"}`}
+                  className={`px-1.5 sm:px-3 py-0.5 sm:py-1 text-[9px] sm:text-[11px] font-bold rounded-md transition-all ${gridType === "lines" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500"}`}
                 >
                   {language === "ar" ? "أسطر" : "Lines"}
                 </button>
                 <button
                   onClick={() => setGridType("none")}
-                  className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${gridType === "none" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500"}`}
+                  className={`px-1.5 sm:px-3 py-0.5 sm:py-1 text-[9px] sm:text-[11px] font-bold rounded-md transition-all ${gridType === "none" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500"}`}
                 >
                   {language === "ar" ? "بيضاء" : "Blank"}
                 </button>
@@ -5870,11 +6267,11 @@ export default function App() {
               {/* Grid Size Controller (Adjust size of grid dots/squares) */}
               {gridType !== "none" && (
                 <>
-                  <div className="w-px h-4 bg-slate-200 mx-1"></div>
-                  <div className="flex bg-slate-100 rounded-lg p-0.5 border border-slate-200 items-center gap-1">
+                  <div className="hidden sm:block w-px h-4 bg-slate-200 mx-1"></div>
+                  <div className="flex bg-slate-100 rounded-lg p-0.5 border border-slate-200 items-center gap-0.5 sm:gap-1 scale-90 sm:scale-100 origin-center">
                     <button
                       onClick={() => setGridSize(Math.max(12, gridSize - 4))}
-                      className="w-6 h-6 rounded-md flex items-center justify-center text-slate-500 hover:bg-white hover:text-indigo-600 transition-all font-bold text-xs cursor-pointer"
+                      className="w-5 h-5 sm:w-6 sm:h-6 rounded-md flex items-center justify-center text-slate-500 hover:bg-white hover:text-indigo-600 transition-all font-bold text-xs cursor-pointer"
                       title={
                         language === "ar"
                           ? "تصغير حجم الشبكة"
@@ -5883,12 +6280,12 @@ export default function App() {
                     >
                       -
                     </button>
-                    <span className="text-[10px] font-mono font-bold text-slate-600 min-w-[32px] text-center select-none">
+                    <span className="text-[9px] sm:text-[10px] font-mono font-bold text-slate-600 min-w-[24px] sm:min-w-[32px] text-center select-none">
                       {gridSize}px
                     </span>
                     <button
                       onClick={() => setGridSize(Math.min(64, gridSize + 4))}
-                      className="w-6 h-6 rounded-md flex items-center justify-center text-slate-500 hover:bg-white hover:text-indigo-600 transition-all font-bold text-xs cursor-pointer"
+                      className="w-5 h-5 sm:w-6 sm:h-6 rounded-md flex items-center justify-center text-slate-500 hover:bg-white hover:text-indigo-600 transition-all font-bold text-xs cursor-pointer"
                       title={
                         language === "ar"
                           ? "تكبير حجم الشبكة"
@@ -5901,11 +6298,11 @@ export default function App() {
                 </>
               )}
 
-              <div className="w-px h-4 bg-slate-200 mx-1"></div>
+              <div className="w-px h-4 bg-slate-200 mx-0.5 sm:mx-1"></div>
 
               {/* Pages Control Bar */}
-              <div className="flex items-center gap-1.5 p-1 rounded-xl">
-                <span className="text-[10px] font-black uppercase text-slate-500 px-2 select-none">
+              <div className="flex items-center gap-1 sm:gap-1.5 p-0.5 sm:p-1 rounded-xl scale-90 sm:scale-100 origin-center">
+                <span className="text-[9px] sm:text-[10px] font-black uppercase text-slate-500 px-1 sm:px-2 select-none hidden xs:inline-block">
                   {language === "ar" ? "الصفحات" : "Pages"}
                 </span>
 
@@ -5922,11 +6319,11 @@ export default function App() {
                   disabled={
                     pages.findIndex((p) => p.id === currentPageId) === 0
                   }
-                  className="w-6 h-6 rounded-md flex items-center justify-center text-slate-600 hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent transition-all cursor-pointer"
+                  className="w-5 h-5 sm:w-6 sm:h-6 rounded-md flex items-center justify-center text-slate-600 hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent transition-all cursor-pointer"
                   title={language === "ar" ? "الصفحة السابقة" : "Previous page"}
                 >
                   <ChevronRight
-                    size={14}
+                    size={12}
                     className={language === "ar" ? "rotate-180" : ""}
                   />
                 </button>
@@ -5935,7 +6332,7 @@ export default function App() {
                 <select
                   value={currentPageId}
                   onChange={(e) => switchPage(e.target.value)}
-                  className="text-xs font-bold text-slate-700 bg-white border border-slate-200/50 rounded-md px-2 py-0.5 focus:outline-none cursor-pointer"
+                  className="text-[10px] sm:text-xs font-bold text-slate-700 bg-white border border-slate-200/50 rounded-md px-1 sm:px-2 py-0.5 focus:outline-none cursor-pointer"
                 >
                   {pages.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -5958,11 +6355,11 @@ export default function App() {
                     pages.findIndex((p) => p.id === currentPageId) ===
                     pages.length - 1
                   }
-                  className="w-6 h-6 rounded-md flex items-center justify-center text-slate-600 hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent transition-all cursor-pointer"
+                  className="w-5 h-5 sm:w-6 sm:h-6 rounded-md flex items-center justify-center text-slate-600 hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent transition-all cursor-pointer"
                   title={language === "ar" ? "الصفحة التالية" : "Next page"}
                 >
                   <ChevronRight
-                    size={14}
+                    size={12}
                     className={language === "ar" ? "" : "rotate-180"}
                   />
                 </button>
@@ -5970,43 +6367,43 @@ export default function App() {
                 {/* Add page button */}
                 <button
                   onClick={addNewPage}
-                  className="w-6 h-6 rounded-md bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 transition-all cursor-pointer"
+                  className="w-5 h-5 sm:w-6 sm:h-6 rounded-md bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 transition-all cursor-pointer"
                   title={
                     language === "ar" ? "إضافة صفحة جديدة" : "Add new page"
                   }
                 >
-                  <Plus size={14} />
+                  <Plus size={12} />
                 </button>
 
                 {/* Delete active page button */}
                 {pages.length > 1 && (
                   <button
                     onClick={() => deletePage(currentPageId)}
-                    className="w-6 h-6 rounded-md text-red-500 hover:bg-red-50 flex items-center justify-center transition-all cursor-pointer"
+                    className="w-5 h-5 sm:w-6 sm:h-6 rounded-md text-red-500 hover:bg-red-50 flex items-center justify-center transition-all cursor-pointer"
                     title={
                       language === "ar"
                         ? "حذف الصفحة الحالية"
                         : "Delete current page"
                     }
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={12} />
                   </button>
                 )}
               </div>
 
-              <div className="w-px h-4 bg-slate-200 mx-1"></div>
+              <div className="hidden xs:block w-px h-4 bg-slate-200 mx-0.5 sm:mx-1"></div>
 
               {/* Hide Bottom Bar Button */}
               <button
                 onClick={() => setShowBottomBar(false)}
-                className="p-1.5 hover:bg-red-50 hover:text-red-600 rounded-lg text-slate-400 cursor-pointer transition-colors"
+                className="p-1 sm:p-1.5 hover:bg-red-50 hover:text-red-600 rounded-lg text-slate-400 cursor-pointer transition-colors"
                 title={
                   language === "ar"
                     ? "إخفاء شريط التحكم السفلي"
                     : "Hide Bottom Bar"
                 }
               >
-                <EyeOff size={18} />
+                <EyeOff size={14} className="sm:w-[18px] sm:h-[18px]" />
               </button>
             </div>
           </main>
